@@ -1,0 +1,110 @@
+'use strict';
+
+function buildLayout(state) {
+  const groups = [];
+
+  groups.push({
+    type: 'group',
+    title: 'Spotify',
+    items: [
+      {
+        type: 'string',
+        title: 'Client ID',
+        subtitle:
+          'From developer.spotify.com — set redirect URI to http://127.0.0.1:8888/callback',
+        setting: 'spotifyClientId',
+      },
+      {
+        type: 'dropdown',
+        title: 'Connect Spotify',
+        setting: 'spotifyConnect',
+        values: [
+          { title: 'Idle', value: 'idle' },
+          { title: 'Connect now', value: 'connect' },
+          { title: 'Disconnect', value: 'disconnect' },
+        ],
+      },
+      {
+        type: 'label',
+        title: state.spotifyStatus || 'Spotify: not connected',
+      },
+    ],
+  });
+
+  groups.push({
+    type: 'group',
+    title: 'Tidal (optional, for ISRC matching)',
+    items: [
+      {
+        type: 'string',
+        title: 'Tidal Client ID',
+        subtitle: 'From developer.tidal.com',
+        setting: 'tidalClientId',
+      },
+      {
+        type: 'string',
+        title: 'Tidal Client Secret',
+        setting: 'tidalClientSecret',
+      },
+      {
+        type: 'string',
+        title: 'Tidal Country Code',
+        subtitle: 'e.g. US, DK, GB. Default US.',
+        setting: 'tidalCountryCode',
+      },
+      {
+        type: 'label',
+        title: state.tidalStatus || 'Tidal ISRC lookup: disabled',
+      },
+    ],
+  });
+
+  groups.push({
+    type: 'group',
+    title: 'Import',
+    items: [
+      {
+        type: 'string',
+        title: 'Spotify playlist URL',
+        setting: 'playlistUrl',
+      },
+      {
+        type: 'string',
+        title: 'Target playlist name (optional)',
+        subtitle: 'Leave blank to use the Spotify playlist name',
+        setting: 'targetName',
+      },
+      {
+        type: 'zone',
+        title: 'Roon zone (browse session context)',
+        setting: 'zone',
+      },
+      {
+        type: 'dropdown',
+        title: 'Run import',
+        setting: 'runImport',
+        values: [
+          { title: 'Idle', value: 'idle' },
+          { title: 'Start', value: 'start' },
+          { title: 'Cancel', value: 'cancel' },
+        ],
+      },
+      {
+        type: 'label',
+        title: state.runStatus || 'Idle',
+      },
+      {
+        type: 'label',
+        title: state.lastSummary || '',
+      },
+    ],
+  });
+
+  return {
+    values: state.values,
+    layout: groups,
+    has_error: false,
+  };
+}
+
+module.exports = { buildLayout };

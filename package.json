@@ -1,0 +1,23 @@
+{
+  "name": "roon-extension-spotify-playlist",
+  "version": "0.1.0",
+  "description": "Roon extension that imports a Spotify playlist into a native Roon playlist, matching tracks via ISRC (Tidal) with text-match fallback.",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node test/normalize.test.js && node test/score.test.js"
+  },
+  "dependencies": {
+    "fastest-levenshtein": "^1.0.16",
+    "node-roon-api": "git+https://github.com/roonlabs/node-roon-api.git",
+    "node-roon-api-browse": "git+https://github.com/roonlabs/node-roon-api-browse.git",
+    "node-roon-api-settings": "git+https://github.com/roonlabs/node-roon-api-settings.git",
+    "node-roon-api-status": "git+https://github.com/roonlabs/node-roon-api-status.git",
+    "node-roon-api-transport": "git+https://github.com/roonlabs/node-roon-api-transport.git"
+  },
+  "license": "MIT"
+}
