@@ -4,7 +4,6 @@ const RoonApi = require('node-roon-api');
 const RoonApiStatus = require('node-roon-api-status');
 const RoonApiSettings = require('node-roon-api-settings');
 const RoonApiBrowse = require('node-roon-api-browse');
-const RoonApiTransport = require('node-roon-api-transport');
 
 function createExtension({ onCorePaired, onCoreUnpaired, makeLayout, onSettingsSaved }) {
   const roon = new RoonApi({
@@ -40,7 +39,7 @@ function createExtension({ onCorePaired, onCoreUnpaired, makeLayout, onSettingsS
   const settingsRef = settings;
 
   roon.init_services({
-    required_services: [RoonApiBrowse, RoonApiTransport],
+    required_services: [RoonApiBrowse],
     provided_services: [status, settings],
   });
 
