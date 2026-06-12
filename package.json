@@ -18,7 +18,7 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "test": "node test/normalize.test.js && node test/score.test.js && node test/playlist.test.js && node test/browse.test.js && node test/pipeline.test.js"
+    "test": "node test/normalize.test.js && node test/score.test.js && node test/playlist.test.js && node test/browse.test.js && node test/pipeline.test.js && node test/auth.test.js"
   },
   "dependencies": {
     "fastest-levenshtein": "^1.0.16",

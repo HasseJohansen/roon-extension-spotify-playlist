@@ -5,7 +5,7 @@ const path = require('path');
 
 const { createExtension } = require('./roon/extension');
 const { buildLayout } = require('./roon/settings');
-const { startInteractiveAuth, SpotifyTokenStore, REDIRECT_URI } = require('./spotify/auth');
+const { beginAuth, parseAuthInput, startCallbackServer, exchangeCodeForTokens, SpotifyTokenStore, REDIRECT_URI } = require('./spotify/auth');
 const { TidalClient } = require('./tidal/isrc');
 const { runImport } = require('./importer');
 
@@ -27,6 +27,7 @@ const state = {
   values: {
     spotifyClientId: cfg.spotifyClientId || '',
     spotifyConnect: 'idle',
+    spotifyAuthCode: '',
     tidalClientId: cfg.tidalClientId || '',
     tidalClientSecret: cfg.tidalClientSecret || '',
     tidalCountryCode: cfg.tidalCountryCode || 'US',
@@ -89,6 +90,59 @@ function setStatus(s) {
   if (ext.status) ext.status.set_status(formatStatus(), false);
 }
 
+// In-flight Spotify auth attempt (PKCE verifier/state kept until the user
+// completes the flow, via the local callback or by pasting the code).
+let pendingAuth = null;
+
+function cancelPendingAuth() {
+  if (pendingAuth && pendingAuth.server) { try { pendingAuth.server.close(); } catch (_) { /* ignore */ } }
+  pendingAuth = null;
+}
+
+function startSpotifyConnect(clientId) {
+  cancelPendingAuth();
+  const { authUrl, verifier, state: st } = beginAuth(clientId);
+  pendingAuth = { verifier, state: st, clientId };
+  state.spotifyStatus = `Spotify: open this URL → ${authUrl}`;
+  console.log('\nAuthorize Spotify by opening this URL in any browser:\n', authUrl);
+  console.log('\nAfter approving, the http://127.0.0.1:8888 page failing to load is expected.');
+  console.log('Copy the whole address-bar URL (or just the code=… value) into the');
+  console.log('"Paste Spotify auth code" field in Roon → Connect Spotify.\n');
+  // Best-effort automatic capture for local / port-forwarded setups.
+  try {
+    const server = startCallbackServer(st, (err, code) => {
+      if (err || !code) return; // paste flow remains available
+      if (pendingAuth && pendingAuth.state === st) finishSpotifyAuth(code);
+    });
+    pendingAuth.server = server;
+  } catch (_) { /* paste flow still works */ }
+}
+
+async function finishSpotifyAuth(input) {
+  if (!pendingAuth) {
+    state.spotifyStatus = 'Spotify: click "Connect now" first';
+  } else {
+    const { code, state: gotState } = parseAuthInput(input);
+    if (!code) {
+      state.spotifyStatus = 'Spotify: no code found in the pasted text';
+    } else if (gotState && gotState !== pendingAuth.state) {
+      state.spotifyStatus = 'Spotify: state mismatch — click "Connect now" and retry';
+    } else {
+      try {
+        const tokens = await exchangeCodeForTokens({ clientId: pendingAuth.clientId, code, verifier: pendingAuth.verifier });
+        tokenStore.setTokens(tokens);
+        const c = readConfig(); c.spotifyTokens = tokens; writeConfig(c);
+        state.spotifyStatus = 'Spotify: connected';
+        cancelPendingAuth();
+      } catch (e) {
+        state.spotifyStatus = `Spotify: auth failed — ${e.message}`;
+      }
+    }
+  }
+  if (ext.settings) ext.settings.update_settings(buildLayout(state));
+  setStatus(state.runStatus);
+}
+
 async function handleSettingsChange(values) {
   const cfgNow = readConfig();
   const newClientId = values.spotifyClientId || '';
@@ -101,28 +155,13 @@ async function handleSettingsChange(values) {
     if (!newClientId) {
       state.spotifyStatus = 'Spotify: enter Client ID first';
     } else {
-      state.spotifyStatus = 'Spotify: opening browser…';
-      setStatus(state.runStatus);
-      try {
-        const tokens = await startInteractiveAuth(newClientId, (url) => {
-          state.spotifyStatus = `Spotify: open this URL → ${url}`;
-          ext.settings.update_settings(buildLayout(state));
-          setStatus(state.runStatus);
-          console.log('\nOpen this URL in your browser to authorize Spotify:\n', url, '\n');
-        });
-        tokenStore.setTokens(tokens);
-        cfgNow.spotifyTokens = tokens;
-        state.spotifyStatus = 'Spotify: connected';
-      } catch (err) {
-        state.spotifyStatus = `Spotify: auth failed — ${err.message}`;
-      }
-      ext.settings.update_settings(buildLayout(state));
-      setStatus(state.runStatus);
+      startSpotifyConnect(newClientId);
     }
     values.spotifyConnect = 'idle';
   } else if (values.spotifyConnect === 'disconnect') {
     delete cfgNow.spotifyTokens;
     tokenStore.setTokens(null);
+    cancelPendingAuth();
     state.spotifyStatus = 'Spotify: not connected';
     values.spotifyConnect = 'idle';
   }
@@ -137,6 +176,14 @@ async function handleSettingsChange(values) {
 
   if (values.zone) cfgNow.zone = values.zone;
   writeConfig(cfgNow);
+
+  // Completing Spotify auth by pasted code/URL (works when the browser is on a
+  // different machine than the extension — e.g. Kubernetes). Done after
+  // writeConfig so finishSpotifyAuth's token persist isn't clobbered.
+  if (values.spotifyAuthCode && values.spotifyAuthCode.trim()) {
+    await finishSpotifyAuth(values.spotifyAuthCode.trim());
+    values.spotifyAuthCode = '';
+  }
 
   if (values.runImport === 'start' && !state.importing) {
     values.runImport = 'idle';
