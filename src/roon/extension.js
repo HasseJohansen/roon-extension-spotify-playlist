@@ -10,9 +10,9 @@ function createExtension({ onCorePaired, onCoreUnpaired, makeLayout, onSettingsS
     extension_id: 'com.hhj.spotify-playlist-importer',
     display_name: 'Spotify Playlist Importer',
     display_version: '0.1.0',
-    publisher: 'hhj',
-    email: 'hhj@cloud2.net',
-    website: 'https://github.com/hhj/roon-extension-spotify-playlist',
+    publisher: 'Hasse Hagen Johansen',
+    email: 'hasse-roon@1mx.dk',
+    website: 'https://github.com/HasseJohansen/roon-extension-spotify-playlist',
     core_paired(core) {
       onCorePaired(core);
     },
