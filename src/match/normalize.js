@@ -48,6 +48,17 @@ function normalize(input) {
   return s;
 }
 
+// Reduce a title to its core: strip known decorators, then drop any remaining
+// parenthetical (e.g. "(En Inciterende Flamenco)") and any " - <suffix>" tail
+// (e.g. "- The Disco Boys Edit", "- 1995 - Remaster"). Used both to build a
+// forgiving Roon search query and for relaxed title comparison.
+function baseTitle(input) {
+  let s = strip(String(input == null ? '' : input));
+  s = s.replace(/\s*\([^)]*\)\s*/g, ' ');
+  s = s.replace(/\s+-\s+.*$/, '');
+  return s.replace(/\s+/g, ' ').trim();
+}
+
 function primaryArtist(artistField) {
   if (!artistField) return '';
   if (Array.isArray(artistField)) {
@@ -57,4 +68,4 @@ function primaryArtist(artistField) {
   return first || '';
 }
 
-module.exports = { strip, normalize, stripDiacritics, primaryArtist };
+module.exports = { strip, normalize, stripDiacritics, primaryArtist, baseTitle };
