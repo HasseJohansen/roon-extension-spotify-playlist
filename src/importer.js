@@ -30,7 +30,6 @@ async function runImport({
   const unmatched = [];
   let matched = 0;
   let errors = 0;
-  let createdPlaylist = false;
 
   for (let i = 0; i < total; i++) {
     if (shouldCancel && shouldCancel()) {
@@ -58,12 +57,9 @@ async function runImport({
         continue;
       }
 
-      await browser.addTrackToPlaylist({
-        trackItemKey: match.candidate.itemKey,
-        playlistName: name,
-        createNew: !createdPlaylist,
-      });
-      createdPlaylist = true;
+      // Roon's API can't add to a playlist; append to the zone's queue instead.
+      // The user saves the queue as a playlist in the Roon app afterwards.
+      await browser.queueTrack(match.candidate.itemKey);
       matched++;
       report.push({
         index: i + 1,

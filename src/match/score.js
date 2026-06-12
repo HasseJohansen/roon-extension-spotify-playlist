@@ -1,7 +1,7 @@
 'use strict';
 
 const { distance } = require('fastest-levenshtein');
-const { normalize, primaryArtist } = require('./normalize');
+const { normalize } = require('./normalize');
 
 function similarity(a, b) {
   const na = normalize(a);
@@ -12,6 +12,35 @@ function similarity(a, b) {
   return 1 - distance(na, nb) / max;
 }
 
+// Split an artist field into individual names. Spotify gives an array; Roon gives
+// a single comma-separated subtitle that often lists songwriters/composers first
+// and the actual performer last. Don't split on "&"/"and" so names like
+// "Nik & Jay" stay intact.
+function splitArtists(field) {
+  if (Array.isArray(field)) return field.map((a) => (a && (a.name || a)) || '').filter(Boolean);
+  return String(field || '')
+    .split(/\s*,\s*|\s+feat\.?\s+|\s+ft\.?\s+|\s*\/\s*/i)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+// Best similarity between ANY Spotify artist and ANY name Roon lists. Returns 1
+// as soon as one pair matches exactly (normalized), so a performer buried after
+// the composers still scores a full artist match.
+function artistSimilarity(spotifyArtists, candidateArtist) {
+  const a = splitArtists(spotifyArtists);
+  const b = splitArtists(candidateArtist);
+  let best = 0;
+  for (const x of a) {
+    for (const y of b) {
+      const s = similarity(x, y);
+      if (s > best) best = s;
+      if (best === 1) return 1;
+    }
+  }
+  return best;
+}
+
 function durationOk(spotifyMs, candidateSeconds, toleranceSec = 3) {
   if (!spotifyMs || !candidateSeconds) return null;
   const diff = Math.abs(spotifyMs / 1000 - candidateSeconds);
@@ -20,7 +49,7 @@ function durationOk(spotifyMs, candidateSeconds, toleranceSec = 3) {
 
 function scoreCandidate(spotify, candidate) {
   const titleSim = similarity(spotify.title, candidate.title);
-  const artistSim = similarity(primaryArtist(spotify.artists), primaryArtist(candidate.artist));
+  const artistSim = artistSimilarity(spotify.artists, candidate.artist);
   const albumSim = candidate.album ? similarity(spotify.album, candidate.album) : 0;
   const durOk = durationOk(spotify.durationMs, candidate.durationSec);
 

@@ -18,16 +18,9 @@ class RoonBrowser {
   }
 
   _opts(extra) {
-    const merged = Object.assign({ multi_session_key: this.multiSessionKey }, extra || {});
-    // Default to the configured zone, but allow callers to opt out by passing
-    // `zone_or_output_id: null` — Roon returns playback actions when a zone is
-    // set and the management actions (incl. Add to Playlist) when it is not.
-    if (merged.zone_or_output_id === undefined) {
-      if (this.zoneOrOutputId) merged.zone_or_output_id = this.zoneOrOutputId;
-    } else if (merged.zone_or_output_id === null) {
-      delete merged.zone_or_output_id;
-    }
-    return merged;
+    const base = { multi_session_key: this.multiSessionKey };
+    if (this.zoneOrOutputId) base.zone_or_output_id = this.zoneOrOutputId;
+    return Object.assign(base, extra || {});
   }
 
   browse(opts) {
@@ -100,10 +93,7 @@ class RoonBrowser {
   }
 
   async openTrackActions(itemKey) {
-    // Browse without a zone so Roon returns the management action menu (Add to
-    // Library / Add to Playlist / …) rather than the playback-only menu (Play
-    // Now / Queue / …) it returns when a zone is attached.
-    await this.browse({ hierarchy: 'search', item_key: itemKey, zone_or_output_id: null });
+    await this.browse({ hierarchy: 'search', item_key: itemKey });
     let items = await this.loadAll();
     // Some Roon builds return an intermediate single-item "track view" before the
     // actual action menu. When we land on a lone action_list item (the track
@@ -111,7 +101,7 @@ class RoonBrowser {
     // looping on unexpected shapes.
     let guard = 0;
     while (guard < 2 && items.length === 1 && items[0].hint === 'action_list' && items[0].item_key) {
-      await this.browse({ hierarchy: 'search', item_key: items[0].item_key, zone_or_output_id: null });
+      await this.browse({ hierarchy: 'search', item_key: items[0].item_key });
       items = await this.loadAll();
       guard += 1;
     }
@@ -128,57 +118,25 @@ class RoonBrowser {
     return null;
   }
 
-  // Navigating the Add-to-Playlist sub-menus (picker, New Playlist prompt,
-  // confirm) is non-playback, so these also browse without a zone — consistent
-  // with openTrackActions and required for the management actions to appear.
   async clickItem(itemKey, hierarchy = 'search') {
-    await this.browse({ hierarchy, item_key: itemKey, zone_or_output_id: null });
+    await this.browse({ hierarchy, item_key: itemKey });
     return this.loadAll(undefined, hierarchy);
   }
 
-  async submitInput(itemKey, input, hierarchy = 'search') {
-    await this.browse({ hierarchy, item_key: itemKey, input, zone_or_output_id: null });
-    return this.loadAll(undefined, hierarchy);
-  }
-
-  async addTrackToPlaylist({ trackItemKey, playlistName, createNew }) {
+  // Roon's Extension API has no "Add to Playlist" — the track action menu only
+  // exposes playback actions. So we append each matched track to the zone's play
+  // queue via the "Queue" action; the user then saves that queue as a playlist in
+  // the Roon app. (Queue needs the zone, supplied by _opts.)
+  async queueTrack(trackItemKey, actionTitle = 'Queue') {
     const actions = await this.openTrackActions(trackItemKey);
-    const addToPlaylist = this.findItemByTitle(actions, 'Add to Playlist', { fuzzy: true });
-    if (!addToPlaylist) {
-      throw new Error(`"Add to Playlist" action not found in track menu (saw: ${describeItems(actions)})`);
+    const action =
+      this.findItemByTitle(actions, actionTitle, { fuzzy: false }) ||
+      this.findItemByTitle(actions, actionTitle, { fuzzy: true });
+    if (!action) {
+      throw new Error(`"${actionTitle}" action not found in track menu (saw: ${describeItems(actions)})`);
     }
-    const picker = await this.clickItem(addToPlaylist.item_key);
-
-    if (createNew) {
-      const newPlaylist = this.findItemByTitle(picker, 'New Playlist', { fuzzy: true });
-      if (!newPlaylist) throw new Error(`"New Playlist" item not found in picker (saw: ${describeItems(picker)})`);
-      const promptItems = await this.clickItem(newPlaylist.item_key);
-      const promptItem = promptItems.find((it) => it.input_prompt) || newPlaylist;
-      const promptKey = promptItem.input_prompt ? promptItem.item_key : newPlaylist.item_key;
-      const after = await this.submitInput(promptKey, playlistName);
-      await this.confirmIfNeeded(after);
-      return;
-    }
-
-    const target = this.findItemByTitle(picker, playlistName, { fuzzy: false });
-    if (!target) {
-      throw new Error(
-        `Playlist "${playlistName}" not found in picker — was it created on the first track? ` +
-        `(saw: ${describeItems(picker)})`,
-      );
-    }
-    const after = await this.clickItem(target.item_key);
-    await this.confirmIfNeeded(after);
-  }
-
-  async confirmIfNeeded(items) {
-    if (!items || items.length === 0) return;
-    const confirm = items.find(
-      (it) => /^(add|confirm|done|ok)$/i.test(it.title || '') && it.hint !== 'header',
-    );
-    if (confirm) {
-      await this.clickItem(confirm.item_key);
-    }
+    // Browsing an `action` item executes it (here: append to the zone's queue).
+    await this.browse({ hierarchy: 'search', item_key: action.item_key });
   }
 }
 
