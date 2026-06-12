@@ -21,6 +21,31 @@ function fakeSvc() {
   return svc;
 }
 
+// A fake service that models Roon's stateful browse tree: browse({item_key})
+// moves to that node, load returns the current node's children. `tree` maps an
+// item_key to its child items.
+function treeSvc(tree) {
+  const calls = [];
+  let current = 'ROOT';
+  const svc = {
+    calls,
+    browse(opts, cb) {
+      calls.push({ type: 'browse', item_key: opts.item_key, input: opts.input });
+      if (opts.pop_all) current = 'ROOT';
+      if (opts.item_key) current = opts.item_key;
+      if (opts.input != null) current = `${current}/submitted`;
+      const items = (tree[current] && tree[current].items) || [];
+      cb(null, { action: 'list', list: { count: items.length, level: 0 } });
+    },
+    load(opts, cb) {
+      calls.push({ type: 'load', item_key: undefined });
+      const items = (tree[current] && tree[current].items) || [];
+      cb(null, { items, offset: 0, list: { count: items.length } });
+    },
+  };
+  return svc;
+}
+
 async function main() {
   // Roon's load request REQUIRES a `hierarchy` field (same as browse). loadAll()
   // must propagate it, or the core rejects with
@@ -49,6 +74,47 @@ async function main() {
       'browse',
       'clickItem must pass its hierarchy through to load',
     );
+  }
+
+  // addTrackToPlaylist must reach the action menu even when Roon returns an
+  // intermediate single-item "track view" first (observed live: browsing a
+  // search-result track yields a list containing just the track again, with the
+  // real Play/Add actions one level deeper).
+  {
+    const tree = {
+      // browsing the matched candidate -> intermediate single-item track view
+      cand: { items: [{ title: 'Song A', subtitle: 'Artist A', hint: 'action_list', item_key: 'cand-inner' }] },
+      // one level deeper -> the real action menu
+      'cand-inner': {
+        items: [
+          { title: 'Play Now', hint: 'action', item_key: 'play' },
+          { title: 'Add to Playlist', hint: 'action_list', item_key: 'addpl' },
+        ],
+      },
+      // the playlist picker
+      addpl: {
+        items: [
+          { title: 'New Playlist', hint: 'action_list', item_key: 'newpl' },
+          { title: 'My Playlist', hint: 'action_list', item_key: 'plkey' },
+        ],
+      },
+      // adding to an existing playlist surfaces a confirm action
+      plkey: { items: [{ title: 'Add', hint: 'action', item_key: 'confirm' }] },
+      confirm: { items: [] },
+    };
+    const svc = treeSvc(tree);
+    const browser = new RoonBrowser(svc, { zoneOrOutputId: 'zone1' });
+
+    await browser.addTrackToPlaylist({
+      trackItemKey: 'cand',
+      playlistName: 'My Playlist',
+      createNew: false,
+    });
+
+    const browsed = svc.calls.filter((c) => c.type === 'browse').map((c) => c.item_key);
+    assert.ok(browsed.includes('cand-inner'), 'must drill past the intermediate track view to the action menu');
+    assert.ok(browsed.includes('addpl'), 'must open the "Add to Playlist" action');
+    assert.ok(browsed.includes('plkey'), 'must select the target playlist');
   }
 
   console.log('browse.test.js OK');
