@@ -18,9 +18,16 @@ class RoonBrowser {
   }
 
   _opts(extra) {
-    const base = { multi_session_key: this.multiSessionKey };
-    if (this.zoneOrOutputId) base.zone_or_output_id = this.zoneOrOutputId;
-    return Object.assign(base, extra || {});
+    const merged = Object.assign({ multi_session_key: this.multiSessionKey }, extra || {});
+    // Default to the configured zone, but allow callers to opt out by passing
+    // `zone_or_output_id: null` — Roon returns playback actions when a zone is
+    // set and the management actions (incl. Add to Playlist) when it is not.
+    if (merged.zone_or_output_id === undefined) {
+      if (this.zoneOrOutputId) merged.zone_or_output_id = this.zoneOrOutputId;
+    } else if (merged.zone_or_output_id === null) {
+      delete merged.zone_or_output_id;
+    }
+    return merged;
   }
 
   browse(opts) {
@@ -93,15 +100,18 @@ class RoonBrowser {
   }
 
   async openTrackActions(itemKey) {
-    await this.browse({ hierarchy: 'search', item_key: itemKey });
+    // Browse without a zone so Roon returns the management action menu (Add to
+    // Library / Add to Playlist / …) rather than the playback-only menu (Play
+    // Now / Queue / …) it returns when a zone is attached.
+    await this.browse({ hierarchy: 'search', item_key: itemKey, zone_or_output_id: null });
     let items = await this.loadAll();
     // Some Roon builds return an intermediate single-item "track view" before the
-    // actual action menu (Play Now / Add to Playlist / …). When we land on a lone
-    // action_list item (the track again), drill one level deeper until we reach a
-    // real menu. Capped to avoid looping on unexpected shapes.
+    // actual action menu. When we land on a lone action_list item (the track
+    // again), drill one level deeper until we reach a real menu. Capped to avoid
+    // looping on unexpected shapes.
     let guard = 0;
     while (guard < 2 && items.length === 1 && items[0].hint === 'action_list' && items[0].item_key) {
-      await this.browse({ hierarchy: 'search', item_key: items[0].item_key });
+      await this.browse({ hierarchy: 'search', item_key: items[0].item_key, zone_or_output_id: null });
       items = await this.loadAll();
       guard += 1;
     }
@@ -118,13 +128,16 @@ class RoonBrowser {
     return null;
   }
 
+  // Navigating the Add-to-Playlist sub-menus (picker, New Playlist prompt,
+  // confirm) is non-playback, so these also browse without a zone — consistent
+  // with openTrackActions and required for the management actions to appear.
   async clickItem(itemKey, hierarchy = 'search') {
-    await this.browse({ hierarchy, item_key: itemKey });
+    await this.browse({ hierarchy, item_key: itemKey, zone_or_output_id: null });
     return this.loadAll(undefined, hierarchy);
   }
 
   async submitInput(itemKey, input, hierarchy = 'search') {
-    await this.browse({ hierarchy, item_key: itemKey, input });
+    await this.browse({ hierarchy, item_key: itemKey, input, zone_or_output_id: null });
     return this.loadAll(undefined, hierarchy);
   }
 

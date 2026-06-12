@@ -21,25 +21,34 @@ function fakeSvc() {
   return svc;
 }
 
-// A fake service that models Roon's stateful browse tree: browse({item_key})
-// moves to that node, load returns the current node's children. `tree` maps an
-// item_key to its child items.
+// A fake service modelling Roon's stateful browse tree. browse({item_key}) moves
+// to that node; load returns the current node's children. A node's `items` may be
+// a function of the browse's zone_or_output_id, which lets us model Roon returning
+// PLAYBACK actions when a zone is set and MANAGEMENT actions (incl. Add to
+// Playlist) when it is not.
 function treeSvc(tree) {
   const calls = [];
   let current = 'ROOT';
+  let zone;
+  const childrenOf = (key) => {
+    const node = tree[key];
+    if (!node) return [];
+    return typeof node.items === 'function' ? node.items(zone) : node.items;
+  };
   const svc = {
     calls,
     browse(opts, cb) {
-      calls.push({ type: 'browse', item_key: opts.item_key, input: opts.input });
+      calls.push({ type: 'browse', item_key: opts.item_key, input: opts.input, zone: opts.zone_or_output_id });
       if (opts.pop_all) current = 'ROOT';
       if (opts.item_key) current = opts.item_key;
       if (opts.input != null) current = `${current}/submitted`;
-      const items = (tree[current] && tree[current].items) || [];
+      zone = opts.zone_or_output_id;
+      const items = childrenOf(current);
       cb(null, { action: 'list', list: { count: items.length, level: 0 } });
     },
     load(opts, cb) {
-      calls.push({ type: 'load', item_key: undefined });
-      const items = (tree[current] && tree[current].items) || [];
+      calls.push({ type: 'load' });
+      const items = childrenOf(current);
       cb(null, { items, offset: 0, list: { count: items.length } });
     },
   };
@@ -62,43 +71,46 @@ async function main() {
     }
   }
 
-  // clickItem/submitInput accept a custom hierarchy and must thread it into load.
+  // Search browses must still carry the configured zone (proven-working path).
   {
     const svc = fakeSvc();
     const browser = new RoonBrowser(svc, { zoneOrOutputId: 'zone1' });
-    await browser.clickItem('item-key-1', 'browse');
-
-    assert.ok(svc.calls.load.length > 0, 'clickItem must issue a load');
-    assert.equal(
-      svc.calls.load[svc.calls.load.length - 1].hierarchy,
-      'browse',
-      'clickItem must pass its hierarchy through to load',
-    );
+    await browser.search('Bohemian Rhapsody Queen');
+    assert.equal(svc.calls.browse[0].zone_or_output_id, 'zone1', 'search keeps the zone');
   }
 
-  // addTrackToPlaylist must reach the action menu even when Roon returns an
-  // intermediate single-item "track view" first (observed live: browsing a
-  // search-result track yields a list containing just the track again, with the
-  // real Play/Add actions one level deeper).
+  // addTrackToPlaylist must reach the *management* action menu that contains
+  // "Add to Playlist". Roon returns playback-only actions when a zone is set, so
+  // the track-action navigation must browse WITHOUT a zone. It must also drill
+  // past Roon's intermediate single-item "track view".
   {
     const tree = {
       // browsing the matched candidate -> intermediate single-item track view
       cand: { items: [{ title: 'Song A', subtitle: 'Artist A', hint: 'action_list', item_key: 'cand-inner' }] },
-      // one level deeper -> the real action menu
+      // one level deeper -> actions, which DIFFER by zone:
       'cand-inner': {
-        items: [
-          { title: 'Play Now', hint: 'action', item_key: 'play' },
-          { title: 'Add to Playlist', hint: 'action_list', item_key: 'addpl' },
-        ],
+        items: (zone) =>
+          zone
+            ? [
+                // playback set (zone present) — no Add to Playlist here
+                { title: 'Play Now', hint: 'action', item_key: 'play' },
+                { title: 'Add Next', hint: 'action', item_key: 'next' },
+                { title: 'Queue', hint: 'action', item_key: 'queue' },
+                { title: 'Start Radio', hint: 'action', item_key: 'radio' },
+              ]
+            : [
+                // management set (no zone) — the one we need
+                { title: 'Add to Library', hint: 'action', item_key: 'addlib' },
+                { title: 'Add to Playlist', hint: 'action_list', item_key: 'addpl' },
+                { title: 'Add to Listen Later', hint: 'action', item_key: 'listen' },
+              ],
       },
-      // the playlist picker
       addpl: {
         items: [
           { title: 'New Playlist', hint: 'action_list', item_key: 'newpl' },
           { title: 'My Playlist', hint: 'action_list', item_key: 'plkey' },
         ],
       },
-      // adding to an existing playlist surfaces a confirm action
       plkey: { items: [{ title: 'Add', hint: 'action', item_key: 'confirm' }] },
       confirm: { items: [] },
     };
@@ -111,8 +123,11 @@ async function main() {
       createNew: false,
     });
 
+    const trackBrowse = svc.calls.find((c) => c.type === 'browse' && c.item_key === 'cand');
+    assert.ok(trackBrowse, 'must browse the candidate track');
+    assert.equal(trackBrowse.zone, undefined, 'track-action browse must omit the zone to expose Add to Playlist');
     const browsed = svc.calls.filter((c) => c.type === 'browse').map((c) => c.item_key);
-    assert.ok(browsed.includes('cand-inner'), 'must drill past the intermediate track view to the action menu');
+    assert.ok(browsed.includes('cand-inner'), 'must drill past the intermediate track view');
     assert.ok(browsed.includes('addpl'), 'must open the "Add to Playlist" action');
     assert.ok(browsed.includes('plkey'), 'must select the target playlist');
   }
