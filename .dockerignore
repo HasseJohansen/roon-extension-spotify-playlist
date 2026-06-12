@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Git
+.git/
+.gitignore
+.github/
+
+# npm
+npm-debug.log
+
+# IDE / tooling
+.idea/
+.vscode/
+.claude/
+.tool-versions
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Tests
+test/
+.coverage/
+
+# Build artifacts
+build/
+dist/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Documentation
+*.md
+
+# Secrets and runtime artifacts (never bake into the image)
+config.json
+config.json.bak
+match-report.json
+unmatched.log

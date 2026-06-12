@@ -1,5 +1,11 @@
 'use strict';
 
+// Compact, log-friendly description of a Roon item list, for diagnostic errors.
+function describeItems(items) {
+  if (!items || items.length === 0) return '<empty>';
+  return items.map((it) => `${it.title || '?'}[${it.hint || '?'}]`).join(', ');
+}
+
 class RoonBrowser {
   constructor(roonBrowse, { multiSessionKey = 'spotify-importer', zoneOrOutputId = null } = {}) {
     this.svc = roonBrowse;
@@ -35,11 +41,13 @@ class RoonBrowser {
     });
   }
 
-  async loadAll(level) {
+  async loadAll(level, hierarchy = 'search') {
     const out = [];
     let offset = 0;
     while (true) {
-      const body = await this.load({ offset, count: 100, level });
+      // Roon's `load` request requires `hierarchy` (same as `browse`); omitting it
+      // is rejected with "missing required string field: hierarchy".
+      const body = await this.load({ hierarchy, offset, count: 100, level });
       const items = body.items || [];
       out.push(...items);
       if (items.length < 100) break;
@@ -86,7 +94,18 @@ class RoonBrowser {
 
   async openTrackActions(itemKey) {
     await this.browse({ hierarchy: 'search', item_key: itemKey });
-    return this.loadAll();
+    let items = await this.loadAll();
+    // Some Roon builds return an intermediate single-item "track view" before the
+    // actual action menu. When we land on a lone action_list item (the track
+    // again), drill one level deeper until we reach a real menu. Capped to avoid
+    // looping on unexpected shapes.
+    let guard = 0;
+    while (guard < 2 && items.length === 1 && items[0].hint === 'action_list' && items[0].item_key) {
+      await this.browse({ hierarchy: 'search', item_key: items[0].item_key });
+      items = await this.loadAll();
+      guard += 1;
+    }
+    return items;
   }
 
   findItemByTitle(items, title, opts = {}) {
@@ -101,49 +120,23 @@ class RoonBrowser {
 
   async clickItem(itemKey, hierarchy = 'search') {
     await this.browse({ hierarchy, item_key: itemKey });
-    return this.loadAll();
+    return this.loadAll(undefined, hierarchy);
   }
 
-  async submitInput(itemKey, input, hierarchy = 'search') {
-    await this.browse({ hierarchy, item_key: itemKey, input });
-    return this.loadAll();
-  }
-
-  async addTrackToPlaylist({ trackItemKey, playlistName, createNew }) {
+  // Roon's Extension API has no "Add to Playlist" — the track action menu only
+  // exposes playback actions. So we append each matched track to the zone's play
+  // queue via the "Queue" action; the user then saves that queue as a playlist in
+  // the Roon app. (Queue needs the zone, supplied by _opts.)
+  async queueTrack(trackItemKey, actionTitle = 'Queue') {
     const actions = await this.openTrackActions(trackItemKey);
-    const addToPlaylist = this.findItemByTitle(actions, 'Add to Playlist', { fuzzy: true });
-    if (!addToPlaylist) {
-      throw new Error('"Add to Playlist" action not found in track menu');
+    const action =
+      this.findItemByTitle(actions, actionTitle, { fuzzy: false }) ||
+      this.findItemByTitle(actions, actionTitle, { fuzzy: true });
+    if (!action) {
+      throw new Error(`"${actionTitle}" action not found in track menu (saw: ${describeItems(actions)})`);
     }
-    const picker = await this.clickItem(addToPlaylist.item_key);
-
-    if (createNew) {
-      const newPlaylist = this.findItemByTitle(picker, 'New Playlist', { fuzzy: true });
-      if (!newPlaylist) throw new Error('"New Playlist" item not found in picker');
-      const promptItems = await this.clickItem(newPlaylist.item_key);
-      const promptItem = promptItems.find((it) => it.input_prompt) || newPlaylist;
-      const promptKey = promptItem.input_prompt ? promptItem.item_key : newPlaylist.item_key;
-      const after = await this.submitInput(promptKey, playlistName);
-      await this.confirmIfNeeded(after);
-      return;
-    }
-
-    const target = this.findItemByTitle(picker, playlistName, { fuzzy: false });
-    if (!target) {
-      throw new Error(`Playlist "${playlistName}" not found in picker — was it created on the first track?`);
-    }
-    const after = await this.clickItem(target.item_key);
-    await this.confirmIfNeeded(after);
-  }
-
-  async confirmIfNeeded(items) {
-    if (!items || items.length === 0) return;
-    const confirm = items.find(
-      (it) => /^(add|confirm|done|ok)$/i.test(it.title || '') && it.hint !== 'header',
-    );
-    if (confirm) {
-      await this.clickItem(confirm.item_key);
-    }
+    // Browsing an `action` item executes it (here: append to the zone's queue).
+    await this.browse({ hierarchy: 'search', item_key: action.item_key });
   }
 }
 

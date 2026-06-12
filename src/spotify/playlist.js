@@ -38,6 +38,10 @@ async function fetchPlaylistMeta(tokenStore, playlistId) {
   });
 }
 
+async function fetchCurrentUser(tokenStore) {
+  return spotifyGet(tokenStore, '/me'); // no fields param; returns id, display_name
+}
+
 async function fetchPlaylistItems(tokenStore, playlistId) {
   const items = [];
   let offset = 0;
@@ -45,17 +49,14 @@ async function fetchPlaylistItems(tokenStore, playlistId) {
   const fields =
     'items(is_local,track(name,duration_ms,external_ids(isrc),artists(name),album(name,release_date),external_urls(spotify))),next,total';
   while (true) {
-    const page = await spotifyGet(tokenStore, `/playlists/${playlistId}/tracks`, {
+    const page = await spotifyGet(tokenStore, `/playlists/${playlistId}/items`, {
       offset,
       limit,
       fields,
     });
     const pageItems = page.items || [];
     if (pageItems.length === 0 && offset === 0 && page.total === 0) {
-      throw new Error(
-        'Spotify returned 0 items for this playlist. Since Feb 2026 only playlists you own or collaborate on return tracks via the API. ' +
-        'Either fork this playlist into your own account or pick one you own.',
-      );
+      throw new Error('This playlist has no tracks.');
     }
     for (const it of pageItems) {
       if (!it.track || it.is_local) continue;
@@ -78,11 +79,136 @@ function toTrack(t) {
   };
 }
 
+// --- Non-owned public playlists -------------------------------------------
+// Since Feb 2026 the Web API returns items only for playlists the user owns or
+// collaborates on. For other users' public playlists we read the ordered track
+// IDs from the no-auth embed page, then re-hydrate full metadata (incl. ISRC)
+// via GET /v1/tracks. NOTE: scraping the embed violates Spotify's Developer /
+// Embed Terms and the format is undocumented — acceptable for personal use, and
+// it degrades gracefully if either source changes.
+
+// Fetch the embed page and parse its inlined __NEXT_DATA__ JSON into an ordered
+// list of { spotifyId, title, artistsText, durationMs }.
+async function fetchPlaylistViaEmbed(playlistId) {
+  const url = `https://open.spotify.com/embed/playlist/${playlistId}`;
+  const res = await fetch(url, {
+    headers: {
+      // Spotify serves the SSR data only to browser-like clients.
+      'user-agent':
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+        '(KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`spotify embed ${res.status} for playlist ${playlistId}`);
+  }
+  const html = await res.text();
+  const m = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+  if (!m) {
+    throw new Error(
+      `Could not read tracks for playlist ${playlistId}: the Spotify embed format ` +
+      `changed (no __NEXT_DATA__ block). This fallback path needs updating.`,
+    );
+  }
+  let trackList;
+  try {
+    const data = JSON.parse(m[1]);
+    trackList = data.props.pageProps.state.data.entity.trackList;
+  } catch (err) {
+    throw new Error(
+      `Could not parse the Spotify embed for playlist ${playlistId}: ${err.message}`,
+    );
+  }
+  if (!Array.isArray(trackList)) {
+    throw new Error(`The Spotify embed for playlist ${playlistId} had no trackList.`);
+  }
+  const rows = [];
+  for (const it of trackList) {
+    const spotifyId = parseTrackUri(it && it.uri);
+    if (!spotifyId) continue; // skip local/unavailable rows without a real track id
+    rows.push({
+      spotifyId,
+      title: it.title,
+      artistsText: it.subtitle || '',
+      durationMs: it.duration,
+    });
+  }
+  return rows;
+}
+
+function parseTrackUri(uri) {
+  const m = /^spotify:track:([A-Za-z0-9]+)$/.exec(uri || '');
+  return m ? m[1] : null;
+}
+
+// Re-hydrate full track metadata via GET /v1/tracks (≤50 ids per call). Returns
+// an array aligned with `ids`; entries are null when a track is missing or the
+// whole batch fails (e.g. the endpoint is gated for this app), so callers can
+// fall back per track.
+async function hydrateTracksByIds(tokenStore, ids) {
+  const out = new Array(ids.length).fill(null);
+  for (let start = 0; start < ids.length; start += 50) {
+    const chunk = ids.slice(start, start + 50);
+    let tracks;
+    try {
+      const page = await spotifyGet(tokenStore, '/tracks', { ids: chunk.join(',') });
+      tracks = page.tracks || [];
+    } catch (err) {
+      continue; // leave this chunk null -> caller uses embed data
+    }
+    for (let i = 0; i < chunk.length; i++) {
+      const t = tracks[i];
+      if (t) out[start + i] = toTrack(t);
+    }
+  }
+  return out;
+}
+
+function embedRowToTrack(row) {
+  return {
+    title: row.title,
+    artists: row.artistsText ? row.artistsText.split(/,\s*/).filter(Boolean) : [],
+    album: null,
+    durationMs: row.durationMs,
+    isrc: null,
+    spotifyUrl: row.spotifyId
+      ? `https://open.spotify.com/track/${row.spotifyId}`
+      : null,
+  };
+}
+
+async function fetchPlaylistViaEmbedAndHydrate(tokenStore, playlistId) {
+  const rows = await fetchPlaylistViaEmbed(playlistId);
+  if (rows.length === 0) {
+    throw new Error('This playlist has no tracks.');
+  }
+  const hydrated = await hydrateTracksByIds(tokenStore, rows.map((r) => r.spotifyId));
+  return rows.map((row, i) => hydrated[i] || embedRowToTrack(row));
+}
+
 async function fetchPlaylist(tokenStore, urlOrId) {
   const id = parsePlaylistUrl(urlOrId) || urlOrId;
   const meta = await fetchPlaylistMeta(tokenStore, id);
-  const tracks = await fetchPlaylistItems(tokenStore, id);
-  return { id, name: meta.name, owner: meta.owner, total: meta.tracks.total, tracks };
+  const me = await fetchCurrentUser(tokenStore);
+  const ownedByMe = meta.owner && meta.owner.id === me.id;
+  const total = meta.tracks && meta.tracks.total;
+  let tracks;
+  if (ownedByMe || meta.collaborative) {
+    // Playlists we own/collaborate on: official, full-fidelity path.
+    tracks = await fetchPlaylistItems(tokenStore, id);
+  } else {
+    // Other users' public playlists: embed track IDs + /v1/tracks re-hydrate.
+    tracks = await fetchPlaylistViaEmbedAndHydrate(tokenStore, id);
+    if (typeof total === 'number' && total > tracks.length) {
+      // The embed caps very large playlists; surface it rather than silently
+      // importing a subset.
+      console.warn(
+        `Spotify only exposed ${tracks.length} of ${total} tracks for playlist ` +
+        `"${meta.name}" (owned by another user); the rest could not be fetched.`,
+      );
+    }
+  }
+  return { id, name: meta.name, owner: meta.owner, total, tracks };
 }
 
 module.exports = { parsePlaylistUrl, fetchPlaylist };

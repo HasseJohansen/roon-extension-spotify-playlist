@@ -177,6 +177,7 @@ async function triggerImport(values) {
 
   const tidal = TidalClient.fromConfig(values);
   const zoneOrOutputId = values.zone && (values.zone.output_id || values.zone.zone_id);
+  const zoneName = (values.zone && values.zone.name) || 'your zone';
 
   try {
     const result = await runImport({
@@ -193,7 +194,7 @@ async function triggerImport(values) {
           setStatus(`Fetched ${p.total} tracks from "${p.name}" — importing…`);
         } else if (p.phase === 'progress') {
           setStatus(
-            `Importing ${p.index}/${p.total} → ${p.matched} matched, ${p.unmatched} unmatched, ${p.errors} errors`,
+            `Queuing ${p.index}/${p.total} → ${p.matched} queued, ${p.unmatched} unmatched, ${p.errors} errors`,
           );
         } else if (p.phase === 'cancelled') {
           setStatus(`Cancelled at ${p.index}/${p.total}`);
@@ -202,7 +203,10 @@ async function triggerImport(values) {
         }
       },
     });
-    state.lastSummary = `Done: "${result.name}" → ${result.matched}/${result.total} matched, ${result.unmatched} unmatched, ${result.errors} errors`;
+    state.lastSummary =
+      `Queued ${result.matched}/${result.total} from "${result.name}" to ${zoneName} ` +
+      `(${result.unmatched} unmatched, ${result.errors} errors). ` +
+      `Now in Roon: open ${zoneName}'s Queue → ⋮ → Save Queue as Playlist.`;
     setStatus(state.lastSummary);
   } finally {
     state.importing = false;

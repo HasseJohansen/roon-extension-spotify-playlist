@@ -4,16 +4,15 @@ const RoonApi = require('node-roon-api');
 const RoonApiStatus = require('node-roon-api-status');
 const RoonApiSettings = require('node-roon-api-settings');
 const RoonApiBrowse = require('node-roon-api-browse');
-const RoonApiTransport = require('node-roon-api-transport');
 
 function createExtension({ onCorePaired, onCoreUnpaired, makeLayout, onSettingsSaved }) {
   const roon = new RoonApi({
     extension_id: 'com.hhj.spotify-playlist-importer',
     display_name: 'Spotify Playlist Importer',
     display_version: '0.1.0',
-    publisher: 'hhj',
-    email: 'hhj@cloud2.net',
-    website: 'https://github.com/hhj/roon-extension-spotify-playlist',
+    publisher: 'Hasse Hagen Johansen',
+    email: 'hasse-roon@1mx.dk',
+    website: 'https://github.com/HasseJohansen/roon-extension-spotify-playlist',
     core_paired(core) {
       onCorePaired(core);
     },
@@ -40,7 +39,7 @@ function createExtension({ onCorePaired, onCoreUnpaired, makeLayout, onSettingsS
   const settingsRef = settings;
 
   roon.init_services({
-    required_services: [RoonApiBrowse, RoonApiTransport],
+    required_services: [RoonApiBrowse],
     provided_services: [status, settings],
   });
 
