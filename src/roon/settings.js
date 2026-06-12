@@ -25,6 +25,14 @@ function buildLayout(state) {
         ],
       },
       {
+        type: 'string',
+        title: 'Paste Spotify auth code',
+        subtitle:
+          'After approving, paste the redirected URL (or just the code=… value) here. ' +
+          'The 127.0.0.1 page failing to load is expected — use this when the browser is on another machine (e.g. Kubernetes).',
+        setting: 'spotifyAuthCode',
+      },
+      {
         type: 'label',
         title: state.spotifyStatus || 'Spotify: not connected',
       },

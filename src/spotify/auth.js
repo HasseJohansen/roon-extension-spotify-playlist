@@ -36,39 +36,63 @@ function buildAuthUrl(clientId, challenge, state) {
   return `https://accounts.spotify.com/authorize?${params.toString()}`;
 }
 
-function awaitCallback(expectedState, timeoutMs = 5 * 60 * 1000) {
-  return new Promise((resolve, reject) => {
-    const server = http.createServer((req, res) => {
-      const url = new URL(req.url, `http://${REDIRECT_HOST}:${REDIRECT_PORT}`);
-      if (url.pathname !== REDIRECT_PATH) {
-        res.writeHead(404).end();
-        return;
-      }
-      const code = url.searchParams.get('code');
-      const state = url.searchParams.get('state');
-      const error = url.searchParams.get('error');
-
-      const body = error
-        ? `Spotify auth error: ${error}. You can close this tab.`
-        : 'Spotify connected. You can close this tab and return to Roon.';
-      res.writeHead(200, { 'content-type': 'text/plain' });
-      res.end(body);
-
-      server.close();
-
-      if (error) return reject(new Error(error));
-      if (state !== expectedState) return reject(new Error('state mismatch'));
-      if (!code) return reject(new Error('no code in callback'));
-      resolve(code);
-    });
-    server.on('error', reject);
-    server.listen(REDIRECT_PORT, REDIRECT_HOST);
-
-    setTimeout(() => {
-      server.close();
-      reject(new Error('OAuth timed out'));
-    }, timeoutMs).unref();
+// Best-effort local callback listener. Works when the browser can reach the
+// extension's loopback (running locally, or via `kubectl port-forward 8888:8888`).
+// Calls onResult(err) or onResult(null, code) once, and returns the server so the
+// caller can close it. NOT required — the paste-the-code flow works without it.
+function startCallbackServer(expectedState, onResult, timeoutMs = 5 * 60 * 1000) {
+  let done = false;
+  const finish = (err, code) => { if (!done) { done = true; onResult(err, code); } };
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, `http://${REDIRECT_HOST}:${REDIRECT_PORT}`);
+    if (url.pathname !== REDIRECT_PATH) { res.writeHead(404).end(); return; }
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    const error = url.searchParams.get('error');
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end(error
+      ? `Spotify auth error: ${error}. You can close this tab.`
+      : 'Spotify connected. You can close this tab and return to Roon.');
+    try { server.close(); } catch (_) { /* ignore */ }
+    clearTimeout(timer);
+    if (error) return finish(new Error(error));
+    if (expectedState && state !== expectedState) return finish(new Error('state mismatch'));
+    if (!code) return finish(new Error('no code in callback'));
+    finish(null, code);
   });
+  server.on('error', (err) => finish(err));
+  server.listen(REDIRECT_PORT, REDIRECT_HOST);
+  const timer = setTimeout(() => { try { server.close(); } catch (_) { /* ignore */ } finish(new Error('OAuth timed out')); }, timeoutMs);
+  timer.unref();
+  return server;
+}
+
+// Start an auth attempt: build the consent URL and the PKCE verifier/state that
+// must be retained until the user completes the flow (by callback or by paste).
+function beginAuth(clientId) {
+  const { verifier, challenge } = generatePkce();
+  const state = base64url(crypto.randomBytes(16));
+  const authUrl = buildAuthUrl(clientId, challenge, state);
+  return { authUrl, verifier, state };
+}
+
+// Extract { code, state } from whatever the user pastes: the full redirected URL
+// ("http://127.0.0.1:8888/callback?code=…&state=…"), a bare "code=…&state=…"
+// query, or just the code value.
+function parseAuthInput(input) {
+  const s = String(input == null ? '' : input).trim();
+  if (!s) return { code: null, state: null };
+  if (/code=/.test(s)) {
+    try {
+      const u = new URL(s, `http://${REDIRECT_HOST}:${REDIRECT_PORT}`);
+      const code = u.searchParams.get('code');
+      if (code) return { code, state: u.searchParams.get('state') };
+    } catch (_) { /* fall through to regex */ }
+    const cm = s.match(/[?&]?code=([^&\s]+)/);
+    const sm = s.match(/[?&]state=([^&\s]+)/);
+    if (cm) return { code: decodeURIComponent(cm[1]), state: sm ? decodeURIComponent(sm[1]) : null };
+  }
+  return { code: s, state: null };
 }
 
 async function exchangeCodeForTokens({ clientId, code, verifier }) {
@@ -115,18 +139,6 @@ async function refreshTokens({ clientId, refreshToken }) {
   };
 }
 
-async function startInteractiveAuth(clientId, onAuthUrl) {
-  const { verifier, challenge } = generatePkce();
-  const state = base64url(crypto.randomBytes(16));
-  const authUrl = buildAuthUrl(clientId, challenge, state);
-
-  const codePromise = awaitCallback(state);
-  if (onAuthUrl) onAuthUrl(authUrl);
-
-  const code = await codePromise;
-  return exchangeCodeForTokens({ clientId, code, verifier });
-}
-
 class SpotifyTokenStore {
   constructor({ clientId, tokens, persist }) {
     this.clientId = clientId;
@@ -157,7 +169,10 @@ class SpotifyTokenStore {
 
 module.exports = {
   REDIRECT_URI,
-  startInteractiveAuth,
+  beginAuth,
+  parseAuthInput,
+  startCallbackServer,
+  exchangeCodeForTokens,
   refreshTokens,
   SpotifyTokenStore,
 };
