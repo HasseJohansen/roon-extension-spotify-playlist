@@ -100,9 +100,17 @@ function cancelPendingAuth() {
 }
 
 function startSpotifyConnect(clientId) {
+  // Idempotent: if an auth attempt is already outstanding for this client, keep
+  // its URL/state valid rather than regenerating. Roon re-sends the "connect"
+  // dropdown value on later saves, and regenerating would invalidate the PKCE
+  // state of the URL the user is about to (or did) use.
+  if (pendingAuth && pendingAuth.clientId === clientId) {
+    state.spotifyStatus = `Spotify: open this URL → ${pendingAuth.authUrl}`;
+    return;
+  }
   cancelPendingAuth();
   const { authUrl, verifier, state: st } = beginAuth(clientId);
-  pendingAuth = { verifier, state: st, clientId };
+  pendingAuth = { verifier, state: st, clientId, authUrl };
   state.spotifyStatus = `Spotify: open this URL → ${authUrl}`;
   console.log('\nAuthorize Spotify by opening this URL in any browser:\n', authUrl);
   console.log('\nAfter approving, the http://127.0.0.1:8888 page failing to load is expected.');
@@ -151,7 +159,14 @@ async function handleSettingsChange(values) {
     tokenStore.clientId = newClientId;
   }
 
-  if (values.spotifyConnect === 'connect') {
+  // If the user is submitting a pasted auth code, complete that flow — don't
+  // (re)start a connect in the same save, which would regenerate the PKCE state
+  // and break the paste. (Roon often re-sends the "connect" dropdown value.)
+  const pastingAuthCode = !!(values.spotifyAuthCode && values.spotifyAuthCode.trim());
+
+  if (pastingAuthCode) {
+    values.spotifyConnect = 'idle';
+  } else if (values.spotifyConnect === 'connect') {
     if (!newClientId) {
       state.spotifyStatus = 'Spotify: enter Client ID first';
     } else {
