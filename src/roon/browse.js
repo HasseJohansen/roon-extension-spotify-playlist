@@ -35,11 +35,13 @@ class RoonBrowser {
     });
   }
 
-  async loadAll(level) {
+  async loadAll(level, hierarchy = 'search') {
     const out = [];
     let offset = 0;
     while (true) {
-      const body = await this.load({ offset, count: 100, level });
+      // Roon's `load` request requires `hierarchy` (same as `browse`); omitting it
+      // is rejected with "missing required string field: hierarchy".
+      const body = await this.load({ hierarchy, offset, count: 100, level });
       const items = body.items || [];
       out.push(...items);
       if (items.length < 100) break;
@@ -101,12 +103,12 @@ class RoonBrowser {
 
   async clickItem(itemKey, hierarchy = 'search') {
     await this.browse({ hierarchy, item_key: itemKey });
-    return this.loadAll();
+    return this.loadAll(undefined, hierarchy);
   }
 
   async submitInput(itemKey, input, hierarchy = 'search') {
     await this.browse({ hierarchy, item_key: itemKey, input });
-    return this.loadAll();
+    return this.loadAll(undefined, hierarchy);
   }
 
   async addTrackToPlaylist({ trackItemKey, playlistName, createNew }) {
