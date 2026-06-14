@@ -9,6 +9,7 @@ const { RoonBrowser } = require('./roon/browse');
 
 async function runImport({
   spotifyTokens,
+  internalSpotify,
   tidal,
   roonBrowseSvc,
   zoneOrOutputId,
@@ -18,7 +19,7 @@ async function runImport({
   shouldCancel,
   reportDir,
 }) {
-  const playlist = await fetchPlaylist(spotifyTokens, playlistUrl);
+  const playlist = await fetchPlaylist(spotifyTokens, playlistUrl, { internal: internalSpotify });
   const name = targetName && targetName.trim() ? targetName.trim() : playlist.name;
   const total = playlist.tracks.length;
 

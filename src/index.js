@@ -6,6 +6,8 @@ const path = require('path');
 const { createExtension } = require('./roon/extension');
 const { buildLayout } = require('./roon/settings');
 const { beginAuth, parseAuthInput, startCallbackServer, exchangeCodeForTokens, SpotifyTokenStore, REDIRECT_URI } = require('./spotify/auth');
+const { beginInternalAuth, startInternalCallbackServer, exchangeInternalCode, KEYMASTER_CLIENT_ID, INTERNAL_REDIRECT_URI } = require('./spotify/internal-auth');
+const { InternalMetadataClient } = require('./spotify/internal-metadata');
 const { TidalClient } = require('./tidal/isrc');
 const { runImport } = require('./importer');
 
@@ -28,6 +30,8 @@ const state = {
     spotifyClientId: cfg.spotifyClientId || '',
     spotifyConnect: 'idle',
     spotifyAuthCode: '',
+    spotifyInternalConnect: 'idle',
+    spotifyInternalAuthCode: '',
     tidalClientId: cfg.tidalClientId || '',
     tidalClientSecret: cfg.tidalClientSecret || '',
     tidalCountryCode: cfg.tidalCountryCode || 'US',
@@ -37,6 +41,7 @@ const state = {
     runImport: 'idle',
   },
   spotifyStatus: 'Spotify: not connected',
+  internalStatus: 'Spotify ISRC (librespot): not connected',
   tidalStatus: 'Tidal ISRC lookup: disabled',
   runStatus: 'Idle',
   lastSummary: '',
@@ -56,6 +61,23 @@ const tokenStore = new SpotifyTokenStore({
 
 if (tokenStore.isConnected()) {
   state.spotifyStatus = 'Spotify: connected (token cached)';
+}
+
+// Second, optional OAuth: the librespot/keymaster token that unlocks ISRC for
+// other users' public playlists (no developer app needed). Its own token store
+// + metadata client, persisted separately as `internalSpotifyTokens`.
+const internalTokenStore = new SpotifyTokenStore({
+  clientId: KEYMASTER_CLIENT_ID,
+  tokens: cfg.internalSpotifyTokens || null,
+  persist(tokens) {
+    const c = readConfig();
+    c.internalSpotifyTokens = tokens;
+    writeConfig(c);
+  },
+});
+const internalClient = new InternalMetadataClient({ tokenStore: internalTokenStore });
+if (internalTokenStore.isConnected()) {
+  state.internalStatus = 'Spotify ISRC (librespot): connected (token cached)';
 }
 
 function tidalConfigured() {
@@ -82,7 +104,7 @@ const ext = createExtension({
 });
 
 function formatStatus() {
-  return `${state.runStatus} • ${state.spotifyStatus} • ${state.tidalStatus}`;
+  return `${state.runStatus} • ${state.spotifyStatus} • ${state.internalStatus} • ${state.tidalStatus}`;
 }
 
 function setStatus(s) {
@@ -151,6 +173,64 @@ async function finishSpotifyAuth(input) {
   setStatus(state.runStatus);
 }
 
+// --- librespot/keymaster connect (ISRC for other users' playlists) ---------
+// Mirrors the dev-app flow above but uses the fixed keymaster client + /login
+// redirect (internal-auth.js) and persists tokens as `internalSpotifyTokens`.
+let pendingInternalAuth = null;
+
+function cancelPendingInternalAuth() {
+  if (pendingInternalAuth && pendingInternalAuth.server) {
+    try { pendingInternalAuth.server.close(); } catch (_) { /* ignore */ }
+  }
+  pendingInternalAuth = null;
+}
+
+function startInternalConnect() {
+  if (pendingInternalAuth) {
+    state.internalStatus = `Spotify ISRC: open this URL → ${pendingInternalAuth.authUrl}`;
+    return;
+  }
+  const { authUrl, verifier, state: st } = beginInternalAuth();
+  pendingInternalAuth = { verifier, state: st, authUrl };
+  state.internalStatus = `Spotify ISRC: open this URL → ${authUrl}`;
+  console.log('\nAuthorize Spotify (librespot/ISRC) by opening this URL in any browser:\n', authUrl);
+  console.log('\nAfter approving, the http://127.0.0.1:8888 page failing to load is expected.');
+  console.log('Copy the whole address-bar URL (or just the code=… value) into the');
+  console.log('"Paste Spotify ISRC auth code" field in Roon.\n');
+  try {
+    const server = startInternalCallbackServer(st, (err, code) => {
+      if (err || !code) return; // paste flow remains available
+      if (pendingInternalAuth && pendingInternalAuth.state === st) finishInternalAuth(code);
+    });
+    pendingInternalAuth.server = server;
+  } catch (_) { /* paste flow still works */ }
+}
+
+async function finishInternalAuth(input) {
+  if (!pendingInternalAuth) {
+    state.internalStatus = 'Spotify ISRC: click "Connect now" first';
+  } else {
+    const { code, state: gotState } = parseAuthInput(input);
+    if (!code) {
+      state.internalStatus = 'Spotify ISRC: no code found in the pasted text';
+    } else if (gotState && gotState !== pendingInternalAuth.state) {
+      state.internalStatus = 'Spotify ISRC: state mismatch — click "Connect now" and retry';
+    } else {
+      try {
+        const tokens = await exchangeInternalCode({ code, verifier: pendingInternalAuth.verifier });
+        internalTokenStore.setTokens(tokens);
+        const c = readConfig(); c.internalSpotifyTokens = tokens; writeConfig(c);
+        state.internalStatus = 'Spotify ISRC (librespot): connected';
+        cancelPendingInternalAuth();
+      } catch (e) {
+        state.internalStatus = `Spotify ISRC: auth failed — ${e.message}`;
+      }
+    }
+  }
+  if (ext.settings) ext.settings.update_settings(buildLayout(state));
+  setStatus(state.runStatus);
+}
+
 async function handleSettingsChange(values) {
   const cfgNow = readConfig();
   const newClientId = values.spotifyClientId || '';
@@ -181,6 +261,22 @@ async function handleSettingsChange(values) {
     values.spotifyConnect = 'idle';
   }
 
+  // librespot/keymaster connect (optional ISRC source). Same paste-vs-connect
+  // guard as the dev-app flow above.
+  const pastingInternalCode = !!(values.spotifyInternalAuthCode && values.spotifyInternalAuthCode.trim());
+  if (pastingInternalCode) {
+    values.spotifyInternalConnect = 'idle';
+  } else if (values.spotifyInternalConnect === 'connect') {
+    startInternalConnect();
+    values.spotifyInternalConnect = 'idle';
+  } else if (values.spotifyInternalConnect === 'disconnect') {
+    delete cfgNow.internalSpotifyTokens;
+    internalTokenStore.setTokens(null);
+    cancelPendingInternalAuth();
+    state.internalStatus = 'Spotify ISRC (librespot): not connected';
+    values.spotifyInternalConnect = 'idle';
+  }
+
   cfgNow.tidalClientId = values.tidalClientId || '';
   cfgNow.tidalClientSecret = values.tidalClientSecret || '';
   cfgNow.tidalCountryCode = values.tidalCountryCode || 'US';
@@ -198,6 +294,10 @@ async function handleSettingsChange(values) {
   if (values.spotifyAuthCode && values.spotifyAuthCode.trim()) {
     await finishSpotifyAuth(values.spotifyAuthCode.trim());
     values.spotifyAuthCode = '';
+  }
+  if (values.spotifyInternalAuthCode && values.spotifyInternalAuthCode.trim()) {
+    await finishInternalAuth(values.spotifyInternalAuthCode.trim());
+    values.spotifyInternalAuthCode = '';
   }
 
   if (values.runImport === 'start' && !state.importing) {
@@ -244,6 +344,7 @@ async function triggerImport(values) {
   try {
     const result = await runImport({
       spotifyTokens: tokenStore,
+      internalSpotify: internalClient.isConnected() ? internalClient : null,
       tidal,
       roonBrowseSvc: browseSvc,
       zoneOrOutputId,

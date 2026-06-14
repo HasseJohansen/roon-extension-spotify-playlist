@@ -41,6 +41,39 @@ function buildLayout(state) {
 
   groups.push({
     type: 'group',
+    title: 'Spotify ISRC for other users’ playlists (optional, librespot)',
+    items: [
+      {
+        type: 'dropdown',
+        title: 'Connect Spotify (ISRC)',
+        subtitle:
+          'Logs in with a normal Spotify account (no developer app) to read ISRCs for ' +
+          'other users’ public playlists, enabling Tidal ISRC matching for them. ' +
+          'Personal/self-hosted use only.',
+        setting: 'spotifyInternalConnect',
+        values: [
+          { title: 'Idle', value: 'idle' },
+          { title: 'Connect now', value: 'connect' },
+          { title: 'Disconnect', value: 'disconnect' },
+        ],
+      },
+      {
+        type: 'string',
+        title: 'Paste Spotify ISRC auth code',
+        subtitle:
+          'Like the Spotify connect above, but for the ISRC login — paste the redirected ' +
+          'URL (or just the code=… value). The 127.0.0.1 page failing to load is expected.',
+        setting: 'spotifyInternalAuthCode',
+      },
+      {
+        type: 'label',
+        title: state.internalStatus || 'Spotify ISRC (librespot): not connected',
+      },
+    ],
+  });
+
+  groups.push({
+    type: 'group',
     title: 'Tidal (optional, for ISRC matching)',
     items: [
       {

@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+// Minimal slice of Spotify's internal ("librespot") protobufs — only the
+// messages/fields this extension encodes or decodes. Field numbers are taken
+// verbatim from librespot's protocol definitions:
+//   - clienttoken_http.proto + connectivity.proto (client-token bootstrap)
+//   - metadata.proto Track/Album/Artist/ExternalId (ISRC lookup)
+// Unknown fields on the wire are ignored by protobufjs, so this partial schema
+// decodes the full real messages correctly.
+package internal;
+
+// ---------------------------------------------------------------------------
+// client-token  (POST https://clienttoken.spotify.com/v1/clienttoken)
+// ---------------------------------------------------------------------------
+
+enum ClientTokenRequestType {
+  REQUEST_UNKNOWN = 0;
+  REQUEST_CLIENT_DATA_REQUEST = 1;
+  REQUEST_CHALLENGE_ANSWERS_REQUEST = 2;
+}
+
+message ClientTokenRequest {
+  ClientTokenRequestType request_type = 1;
+  // real proto wraps this in a oneof; a singular field is wire-identical.
+  ClientDataRequest client_data = 2;
+}
+
+message ClientDataRequest {
+  string client_version = 1;
+  string client_id = 2;
+  ConnectivitySdkData connectivity_sdk_data = 3;
+}
+
+message ConnectivitySdkData {
+  PlatformSpecificData platform_specific_data = 1;
+  string device_id = 2;
+}
+
+message PlatformSpecificData {
+  // oneof in the real proto; we only ever populate desktop_linux (field 5).
+  NativeDesktopLinuxData desktop_linux = 5;
+}
+
+message NativeDesktopLinuxData {
+  string system_name = 1;     // uname -s
+  string system_release = 2;  // uname -r
+  string system_version = 3;  // uname -v
+  string hardware = 4;        // uname -i / arch
+}
+
+enum ClientTokenResponseType {
+  RESPONSE_UNKNOWN = 0;
+  RESPONSE_GRANTED_TOKEN_RESPONSE = 1;
+  RESPONSE_CHALLENGES_RESPONSE = 2;
+}
+
+message ClientTokenResponse {
+  ClientTokenResponseType response_type = 1;
+  GrantedTokenResponse granted_token = 2;
+  ChallengesResponse challenges = 3;
+}
+
+message GrantedTokenResponse {
+  string token = 1;
+  int32 expires_after_seconds = 2;
+  int32 refresh_after_seconds = 3;
+}
+
+message ChallengesResponse {
+  string state = 1;
+}
+
+// ---------------------------------------------------------------------------
+// metadata  (GET https://{spclient}/metadata/4/track/{gid})
+// ---------------------------------------------------------------------------
+
+message Track {
+  string name = 2;
+  Album album = 3;
+  repeated Artist artist = 4;
+  sint32 duration = 7;                  // milliseconds (zigzag-encoded)
+  repeated ExternalId external_id = 10; // ISRC lives here (type == "isrc")
+}
+
+message Album {
+  string name = 2;
+}
+
+message Artist {
+  string name = 2;
+}
+
+message ExternalId {
+  string type = 1; // e.g. "isrc"
+  string id = 2;   // e.g. "BEP011000054"
+}

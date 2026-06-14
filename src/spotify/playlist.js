@@ -186,7 +186,45 @@ async function fetchPlaylistViaEmbedAndHydrate(tokenStore, playlistId) {
   return rows.map((row, i) => hydrated[i] || embedRowToTrack(row));
 }
 
-async function fetchPlaylist(tokenStore, urlOrId) {
+function warnIfTruncated(meta, total, fetched) {
+  if (typeof total === 'number' && total > fetched) {
+    // The embed caps very large playlists; surface it rather than silently
+    // importing a subset.
+    console.warn(
+      `Spotify only exposed ${fetched} of ${total} tracks for playlist ` +
+      `"${meta.name}" (owned by another user); the rest could not be fetched.`,
+    );
+  }
+}
+
+// Other users' public playlists, WITH ISRC, via the internal librespot client:
+// read the ordered track IDs from the embed, then fill in ISRC + metadata from
+// spclient /metadata/4/track. (The embed is list-only; ISRC comes from spclient.)
+//
+// NB: we deliberately do NOT try the Web API items endpoint with the keymaster
+// token — it's unverified whether a first-party token un-gates non-owned
+// playlists, and a 429 there can carry a multi-hour retry-after that would hang
+// the import. The spclient metadata path is the verified route to ISRC.
+async function fetchNonOwnedViaInternal(internal, playlistId, meta, total) {
+  const rows = await fetchPlaylistViaEmbed(playlistId);
+  if (rows.length === 0) throw new Error('This playlist has no tracks.');
+  let hydrated;
+  try {
+    hydrated = await internal.hydrateTracks(rows.map((r) => r.spotifyId));
+  } catch (err) {
+    console.warn(`librespot metadata unavailable (${err.message}); using embed without ISRC`);
+    hydrated = rows.map(() => null);
+  }
+  const tracks = rows.map((row, i) => hydrated[i] || embedRowToTrack(row));
+  warnIfTruncated(meta, total, tracks.length);
+  return tracks;
+}
+
+// opts.internal: an optional connected InternalMetadataClient (librespot/keymaster).
+// When present it provides ISRC for other users' public playlists; when absent the
+// behaviour is unchanged (dev-app + embed, ISRC only for owned playlists).
+async function fetchPlaylist(tokenStore, urlOrId, opts = {}) {
+  const internal = opts.internal && opts.internal.isConnected() ? opts.internal : null;
   const id = parsePlaylistUrl(urlOrId) || urlOrId;
   const meta = await fetchPlaylistMeta(tokenStore, id);
   const me = await fetchCurrentUser(tokenStore);
@@ -196,17 +234,14 @@ async function fetchPlaylist(tokenStore, urlOrId) {
   if (ownedByMe || meta.collaborative) {
     // Playlists we own/collaborate on: official, full-fidelity path.
     tracks = await fetchPlaylistItems(tokenStore, id);
+  } else if (internal) {
+    // Other users' public playlists, WITH ISRC, via librespot.
+    tracks = await fetchNonOwnedViaInternal(internal, id, meta, total);
   } else {
-    // Other users' public playlists: embed track IDs + /v1/tracks re-hydrate.
+    // Other users' public playlists: embed track IDs + /v1/tracks re-hydrate
+    // (gated → text-only). No librespot connected.
     tracks = await fetchPlaylistViaEmbedAndHydrate(tokenStore, id);
-    if (typeof total === 'number' && total > tracks.length) {
-      // The embed caps very large playlists; surface it rather than silently
-      // importing a subset.
-      console.warn(
-        `Spotify only exposed ${tracks.length} of ${total} tracks for playlist ` +
-        `"${meta.name}" (owned by another user); the rest could not be fetched.`,
-      );
-    }
+    warnIfTruncated(meta, total, tracks.length);
   }
   return { id, name: meta.name, owner: meta.owner, total, tracks };
 }
