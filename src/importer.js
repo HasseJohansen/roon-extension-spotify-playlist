@@ -88,7 +88,7 @@ async function runImport({
     }
   }
 
-  return { name, total, matched, unmatched: unmatched.length, errors };
+  return { name, total, matched, unmatched: unmatched.length, errors, report };
 }
 
 module.exports = { runImport };

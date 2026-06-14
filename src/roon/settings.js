@@ -101,14 +101,100 @@ function buildLayout(state) {
         type: 'label',
         title: state.lastSummary || '',
       },
+      {
+        type: 'dropdown',
+        title: 'Per-track results',
+        subtitle: 'Show how each track from the last import was matched.',
+        setting: 'showResults',
+        values: [
+          { title: 'Hidden', value: 'idle' },
+          { title: 'Show matched / unmatched / errors', value: 'show' },
+          { title: 'Hide', value: 'hide' },
+        ],
+      },
     ],
   });
+
+  if (state.showResults) {
+    for (const g of buildResultGroups(state)) groups.push(g);
+  }
 
   return {
     values: state.values,
     layout: groups,
     has_error: false,
   };
+}
+
+// Per-group cap so a huge playlist doesn't produce an unwieldy settings page;
+// the full detail is always in match-report.json.
+const RESULTS_CAP = 80;
+
+function spotifyLabel(track) {
+  const title = (track && track.title) || '(unknown title)';
+  const artist = (track && track.artists && track.artists.join(', ')) || 'unknown artist';
+  return `"${title}" — ${artist}`;
+}
+
+function cappedLabels(entries, render) {
+  const items = entries.slice(0, RESULTS_CAP).map((e) => ({ type: 'label', title: render(e) }));
+  if (entries.length > RESULTS_CAP) {
+    items.push({
+      type: 'label',
+      title: `…and ${entries.length - RESULTS_CAP} more — see match-report.json for the full list.`,
+    });
+  }
+  return items;
+}
+
+// Build the matched / unmatched / errored groups from the last import's report.
+function buildResultGroups(state) {
+  const report = state.lastReport;
+  if (!report || !report.length) {
+    return [{
+      type: 'group',
+      title: 'Last import results',
+      items: [{ type: 'label', title: 'No import has been run yet.' }],
+    }];
+  }
+
+  const matched = report.filter((e) => e.matched);
+  const errored = report.filter((e) => e.error);
+  const unmatched = report.filter((e) => !e.matched && !e.error);
+
+  const out = [];
+
+  out.push({
+    type: 'group',
+    title: `Matched (${matched.length})`,
+    items: matched.length
+      ? cappedLabels(matched, (e) => {
+          const roon = e.roon
+            ? `  →  ${e.roon.title || ''} — ${e.roon.artist || ''}`.replace(/ — $/, '')
+            : '';
+          const tier = e.tier ? ` (T${e.tier})` : '';
+          return `✓ ${spotifyLabel(e.spotify)}${roon}${tier}`;
+        })
+      : [{ type: 'label', title: 'None.' }],
+  });
+
+  out.push({
+    type: 'group',
+    title: `Unmatched (${unmatched.length})`,
+    items: unmatched.length
+      ? cappedLabels(unmatched, (e) => `✗ ${spotifyLabel(e.spotify)}`)
+      : [{ type: 'label', title: 'None.' }],
+  });
+
+  out.push({
+    type: 'group',
+    title: `Errors (${errored.length})`,
+    items: errored.length
+      ? cappedLabels(errored, (e) => `⚠ ${spotifyLabel(e.spotify)} — ${e.error}`)
+      : [{ type: 'label', title: 'None.' }],
+  });
+
+  return out;
 }
 
 module.exports = { buildLayout };

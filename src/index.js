@@ -42,11 +42,14 @@ const state = {
     targetName: '',
     zone: cfg.zone || null,
     runImport: 'idle',
+    showResults: 'idle',
   },
   spotifyStatus: 'Spotify: not connected',
   tidalStatus: 'Tidal ISRC lookup: disabled',
   runStatus: 'Idle',
   lastSummary: '',
+  lastReport: null, // per-track outcomes of the most recent import
+  showResults: false, // whether the results breakdown is expanded
   cancelRequested: false,
   importing: false,
 };
@@ -215,6 +218,15 @@ async function handleSettingsChange(values) {
     state.cancelRequested = true;
     values.runImport = 'idle';
   }
+
+  // Toggle the per-track results breakdown (matched / unmatched / errors).
+  if (values.showResults === 'show') {
+    state.showResults = true;
+    values.showResults = 'idle';
+  } else if (values.showResults === 'hide') {
+    state.showResults = false;
+    values.showResults = 'idle';
+  }
 }
 
 async function triggerImport(values) {
@@ -267,6 +279,7 @@ async function triggerImport(values) {
         }
       },
     });
+    state.lastReport = result.report || null;
     state.lastSummary =
       `Queued ${result.matched}/${result.total} from "${result.name}" to ${zoneName} ` +
       `(${result.unmatched} unmatched, ${result.errors} errors). ` +
