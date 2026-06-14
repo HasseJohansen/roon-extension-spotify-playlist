@@ -39,7 +39,6 @@ const state = {
     tidalClientSecret: cfg.tidalClientSecret || '',
     tidalCountryCode: cfg.tidalCountryCode || 'US',
     playlistUrl: '',
-    targetName: '',
     zone: cfg.zone || null,
     runImport: 'idle',
     showResults: 'idle',
@@ -262,7 +261,6 @@ async function triggerImport(values) {
       roonBrowseSvc: browseSvc,
       zoneOrOutputId,
       playlistUrl: values.playlistUrl,
-      targetName: values.targetName,
       shouldCancel: () => state.cancelRequested,
       reportDir: REPORT_DIR,
       onProgress(p) {

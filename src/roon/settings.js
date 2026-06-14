@@ -73,12 +73,6 @@ function buildLayout(state) {
         setting: 'playlistUrl',
       },
       {
-        type: 'string',
-        title: 'Target playlist name (optional)',
-        subtitle: 'Leave blank to use the Spotify playlist name',
-        setting: 'targetName',
-      },
-      {
         type: 'zone',
         title: 'Roon zone (browse session context)',
         setting: 'zone',

@@ -53,10 +53,9 @@ docker run -d --network host \
 ### Import a playlist
 
 1. Paste a **Spotify playlist URL**.
-2. *(optional)* set a **Target playlist name**.
-3. Choose the **Roon zone** to queue into.
-4. **Run import → Start.** Progress shows as `Queuing X/Y → … queued, … unmatched, … errors`.
-5. When it finishes, in the Roon app open that zone's **Queue → ⋮ → Save Queue as Playlist**. *(Tip: clear the queue first for a clean playlist.)*
+2. Choose the **Roon zone** to queue into.
+3. **Run import → Start.** Progress shows as `Queuing X/Y → … queued, … unmatched, … errors`.
+4. When it finishes, in the Roon app open that zone's **Queue → ⋮ → Save Queue as Playlist** (you name the playlist there). *(Tip: clear the queue first for a clean playlist.)*
 
 ## Limitations
 

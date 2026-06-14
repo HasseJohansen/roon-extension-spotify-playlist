@@ -13,13 +13,12 @@ async function runImport({
   roonBrowseSvc,
   zoneOrOutputId,
   playlistUrl,
-  targetName,
   onProgress,
   shouldCancel,
   reportDir,
 }) {
   const playlist = await fetchPlaylist(internalSpotify, playlistUrl);
-  const name = targetName && targetName.trim() ? targetName.trim() : playlist.name;
+  const name = playlist.name;
   const total = playlist.tracks.length;
 
   onProgress({ phase: 'fetched', total, name });
