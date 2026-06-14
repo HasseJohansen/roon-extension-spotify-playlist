@@ -8,18 +8,17 @@ const { matchTrack } = require('./match/pipeline');
 const { RoonBrowser } = require('./roon/browse');
 
 async function runImport({
-  spotifyTokens,
+  internalSpotify,
   tidal,
   roonBrowseSvc,
   zoneOrOutputId,
   playlistUrl,
-  targetName,
   onProgress,
   shouldCancel,
   reportDir,
 }) {
-  const playlist = await fetchPlaylist(spotifyTokens, playlistUrl);
-  const name = targetName && targetName.trim() ? targetName.trim() : playlist.name;
+  const playlist = await fetchPlaylist(internalSpotify, playlistUrl);
+  const name = playlist.name;
   const total = playlist.tracks.length;
 
   onProgress({ phase: 'fetched', total, name });
@@ -88,7 +87,7 @@ async function runImport({
     }
   }
 
-  return { name, total, matched, unmatched: unmatched.length, errors };
+  return { name, total, matched, unmatched: unmatched.length, errors, report };
 }
 
 module.exports = { runImport };

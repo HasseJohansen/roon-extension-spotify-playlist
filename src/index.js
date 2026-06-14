@@ -5,7 +5,15 @@ const path = require('path');
 
 const { createExtension } = require('./roon/extension');
 const { buildLayout } = require('./roon/settings');
-const { beginAuth, parseAuthInput, startCallbackServer, exchangeCodeForTokens, SpotifyTokenStore, REDIRECT_URI } = require('./spotify/auth');
+const { parseAuthInput, SpotifyTokenStore } = require('./spotify/auth');
+const {
+  beginInternalAuth,
+  startInternalCallbackServer,
+  exchangeInternalCode,
+  KEYMASTER_CLIENT_ID,
+  INTERNAL_REDIRECT_URI,
+} = require('./spotify/internal-auth');
+const { InternalMetadataClient } = require('./spotify/internal-metadata');
 const { TidalClient } = require('./tidal/isrc');
 const { runImport } = require('./importer');
 
@@ -25,35 +33,39 @@ const cfg = readConfig();
 const state = {
   core: null,
   values: {
-    spotifyClientId: cfg.spotifyClientId || '',
     spotifyConnect: 'idle',
     spotifyAuthCode: '',
     tidalClientId: cfg.tidalClientId || '',
     tidalClientSecret: cfg.tidalClientSecret || '',
     tidalCountryCode: cfg.tidalCountryCode || 'US',
     playlistUrl: '',
-    targetName: '',
     zone: cfg.zone || null,
     runImport: 'idle',
+    showResults: 'idle',
   },
   spotifyStatus: 'Spotify: not connected',
   tidalStatus: 'Tidal ISRC lookup: disabled',
   runStatus: 'Idle',
   lastSummary: '',
+  lastReport: null, // per-track outcomes of the most recent import
+  showResults: false, // whether the results breakdown is expanded
   cancelRequested: false,
   importing: false,
 };
 
+// Single Spotify login: the librespot/keymaster token (no developer app). It
+// reads every playlist — yours and other users' — with ISRC, via Spotify's
+// internal endpoints. Persisted as `internalSpotifyTokens`.
 const tokenStore = new SpotifyTokenStore({
-  clientId: cfg.spotifyClientId || '',
-  tokens: cfg.spotifyTokens || null,
+  clientId: KEYMASTER_CLIENT_ID,
+  tokens: cfg.internalSpotifyTokens || null,
   persist(tokens) {
     const c = readConfig();
-    c.spotifyTokens = tokens;
+    c.internalSpotifyTokens = tokens;
     writeConfig(c);
   },
 });
-
+const spotify = new InternalMetadataClient({ tokenStore });
 if (tokenStore.isConnected()) {
   state.spotifyStatus = 'Spotify: connected (token cached)';
 }
@@ -99,18 +111,16 @@ function cancelPendingAuth() {
   pendingAuth = null;
 }
 
-function startSpotifyConnect(clientId) {
-  // Idempotent: if an auth attempt is already outstanding for this client, keep
-  // its URL/state valid rather than regenerating. Roon re-sends the "connect"
-  // dropdown value on later saves, and regenerating would invalidate the PKCE
-  // state of the URL the user is about to (or did) use.
-  if (pendingAuth && pendingAuth.clientId === clientId) {
+function startSpotifyConnect() {
+  // Idempotent: keep an outstanding attempt's URL/state valid rather than
+  // regenerating (Roon re-sends the "connect" dropdown value on later saves,
+  // which would otherwise invalidate the PKCE state of the URL in use).
+  if (pendingAuth) {
     state.spotifyStatus = `Spotify: open this URL → ${pendingAuth.authUrl}`;
     return;
   }
-  cancelPendingAuth();
-  const { authUrl, verifier, state: st } = beginAuth(clientId);
-  pendingAuth = { verifier, state: st, clientId, authUrl };
+  const { authUrl, verifier, state: st } = beginInternalAuth();
+  pendingAuth = { verifier, state: st, authUrl };
   state.spotifyStatus = `Spotify: open this URL → ${authUrl}`;
   console.log('\nAuthorize Spotify by opening this URL in any browser:\n', authUrl);
   console.log('\nAfter approving, the http://127.0.0.1:8888 page failing to load is expected.');
@@ -118,7 +128,7 @@ function startSpotifyConnect(clientId) {
   console.log('"Paste Spotify auth code" field in Roon → Connect Spotify.\n');
   // Best-effort automatic capture for local / port-forwarded setups.
   try {
-    const server = startCallbackServer(st, (err, code) => {
+    const server = startInternalCallbackServer(st, (err, code) => {
       if (err || !code) return; // paste flow remains available
       if (pendingAuth && pendingAuth.state === st) finishSpotifyAuth(code);
     });
@@ -128,7 +138,11 @@ function startSpotifyConnect(clientId) {
 
 async function finishSpotifyAuth(input) {
   if (!pendingAuth) {
-    state.spotifyStatus = 'Spotify: click "Connect now" first';
+    // No active attempt. Roon re-sends the pasted code on later saves; if we're
+    // already connected that stale code must not downgrade the status.
+    state.spotifyStatus = tokenStore.isConnected()
+      ? 'Spotify: connected'
+      : 'Spotify: click "Connect now" first';
   } else {
     const { code, state: gotState } = parseAuthInput(input);
     if (!code) {
@@ -137,9 +151,9 @@ async function finishSpotifyAuth(input) {
       state.spotifyStatus = 'Spotify: state mismatch — click "Connect now" and retry';
     } else {
       try {
-        const tokens = await exchangeCodeForTokens({ clientId: pendingAuth.clientId, code, verifier: pendingAuth.verifier });
+        const tokens = await exchangeInternalCode({ code, verifier: pendingAuth.verifier });
         tokenStore.setTokens(tokens);
-        const c = readConfig(); c.spotifyTokens = tokens; writeConfig(c);
+        const c = readConfig(); c.internalSpotifyTokens = tokens; writeConfig(c);
         state.spotifyStatus = 'Spotify: connected';
         cancelPendingAuth();
       } catch (e) {
@@ -153,11 +167,6 @@ async function finishSpotifyAuth(input) {
 
 async function handleSettingsChange(values) {
   const cfgNow = readConfig();
-  const newClientId = values.spotifyClientId || '';
-  if (newClientId !== state.values.spotifyClientId) {
-    cfgNow.spotifyClientId = newClientId;
-    tokenStore.clientId = newClientId;
-  }
 
   // If the user is submitting a pasted auth code, complete that flow — don't
   // (re)start a connect in the same save, which would regenerate the PKCE state
@@ -167,14 +176,10 @@ async function handleSettingsChange(values) {
   if (pastingAuthCode) {
     values.spotifyConnect = 'idle';
   } else if (values.spotifyConnect === 'connect') {
-    if (!newClientId) {
-      state.spotifyStatus = 'Spotify: enter Client ID first';
-    } else {
-      startSpotifyConnect(newClientId);
-    }
+    startSpotifyConnect();
     values.spotifyConnect = 'idle';
   } else if (values.spotifyConnect === 'disconnect') {
-    delete cfgNow.spotifyTokens;
+    delete cfgNow.internalSpotifyTokens;
     tokenStore.setTokens(null);
     cancelPendingAuth();
     state.spotifyStatus = 'Spotify: not connected';
@@ -212,10 +217,19 @@ async function handleSettingsChange(values) {
     state.cancelRequested = true;
     values.runImport = 'idle';
   }
+
+  // Toggle the per-track results breakdown (matched / unmatched / errors).
+  if (values.showResults === 'show') {
+    state.showResults = true;
+    values.showResults = 'idle';
+  } else if (values.showResults === 'hide') {
+    state.showResults = false;
+    values.showResults = 'idle';
+  }
 }
 
 async function triggerImport(values) {
-  if (!tokenStore.isConnected()) {
+  if (!spotify.isConnected()) {
     setStatus('Cannot import: Spotify not connected');
     return;
   }
@@ -235,7 +249,6 @@ async function triggerImport(values) {
 
   state.importing = true;
   setStatus('Starting import…');
-  console.log(`\nSpotify redirect URI must be registered as: ${REDIRECT_URI}`);
 
   const tidal = TidalClient.fromConfig(values);
   const zoneOrOutputId = values.zone && (values.zone.output_id || values.zone.zone_id);
@@ -243,12 +256,11 @@ async function triggerImport(values) {
 
   try {
     const result = await runImport({
-      spotifyTokens: tokenStore,
+      internalSpotify: spotify,
       tidal,
       roonBrowseSvc: browseSvc,
       zoneOrOutputId,
       playlistUrl: values.playlistUrl,
-      targetName: values.targetName,
       shouldCancel: () => state.cancelRequested,
       reportDir: REPORT_DIR,
       onProgress(p) {
@@ -265,6 +277,7 @@ async function triggerImport(values) {
         }
       },
     });
+    state.lastReport = result.report || null;
     state.lastSummary =
       `Queued ${result.matched}/${result.total} from "${result.name}" to ${zoneName} ` +
       `(${result.unmatched} unmatched, ${result.errors} errors). ` +
@@ -277,5 +290,5 @@ async function triggerImport(values) {
 }
 
 console.log(`Spotify Playlist Importer running.
-Spotify redirect URI to register: ${REDIRECT_URI}
-Open Roon → Settings → Extensions → Spotify Playlist Importer.`);
+Connect Spotify in Roon → Settings → Extensions → Spotify Playlist Importer.
+Local OAuth capture listens on ${INTERNAL_REDIRECT_URI} (paste-the-code works remotely).`);

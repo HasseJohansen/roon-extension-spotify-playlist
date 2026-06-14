@@ -13,6 +13,11 @@ const REDIRECT_PORT = 8888;
 const REDIRECT_PATH = '/callback';
 const REDIRECT_URI = `http://${REDIRECT_HOST}:${REDIRECT_PORT}${REDIRECT_PATH}`;
 
+// Default OAuth profile: the user's own developer app (Authorization Code + PKCE).
+// A second profile (librespot/keymaster — see internal-auth.js) reuses these same
+// primitives by passing its own redirectUri/scopes/callback path.
+const DEFAULT_OAUTH = { redirectUri: REDIRECT_URI, scopes: SCOPES };
+
 function base64url(buf) {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
@@ -23,14 +28,16 @@ function generatePkce() {
   return { verifier, challenge };
 }
 
-function buildAuthUrl(clientId, challenge, state) {
+function buildAuthUrl(clientId, challenge, state, opts = {}) {
+  const redirectUri = opts.redirectUri || REDIRECT_URI;
+  const scopes = opts.scopes || SCOPES;
   const params = new URLSearchParams({
     client_id: clientId,
     response_type: 'code',
-    redirect_uri: REDIRECT_URI,
+    redirect_uri: redirectUri,
     code_challenge_method: 'S256',
     code_challenge: challenge,
-    scope: SCOPES.join(' '),
+    scope: scopes.join(' '),
     state,
   });
   return `https://accounts.spotify.com/authorize?${params.toString()}`;
@@ -40,12 +47,14 @@ function buildAuthUrl(clientId, challenge, state) {
 // extension's loopback (running locally, or via `kubectl port-forward 8888:8888`).
 // Calls onResult(err) or onResult(null, code) once, and returns the server so the
 // caller can close it. NOT required — the paste-the-code flow works without it.
-function startCallbackServer(expectedState, onResult, timeoutMs = 5 * 60 * 1000) {
+function startCallbackServer(expectedState, onResult, timeoutMs = 5 * 60 * 1000, opts = {}) {
+  const port = opts.port || REDIRECT_PORT;
+  const callbackPath = opts.path || REDIRECT_PATH;
   let done = false;
   const finish = (err, code) => { if (!done) { done = true; onResult(err, code); } };
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url, `http://${REDIRECT_HOST}:${REDIRECT_PORT}`);
-    if (url.pathname !== REDIRECT_PATH) { res.writeHead(404).end(); return; }
+    const url = new URL(req.url, `http://${REDIRECT_HOST}:${port}`);
+    if (url.pathname !== callbackPath) { res.writeHead(404).end(); return; }
     const code = url.searchParams.get('code');
     const state = url.searchParams.get('state');
     const error = url.searchParams.get('error');
@@ -61,7 +70,7 @@ function startCallbackServer(expectedState, onResult, timeoutMs = 5 * 60 * 1000)
     finish(null, code);
   });
   server.on('error', (err) => finish(err));
-  server.listen(REDIRECT_PORT, REDIRECT_HOST);
+  server.listen(port, REDIRECT_HOST);
   const timer = setTimeout(() => { try { server.close(); } catch (_) { /* ignore */ } finish(new Error('OAuth timed out')); }, timeoutMs);
   timer.unref();
   return server;
@@ -69,10 +78,10 @@ function startCallbackServer(expectedState, onResult, timeoutMs = 5 * 60 * 1000)
 
 // Start an auth attempt: build the consent URL and the PKCE verifier/state that
 // must be retained until the user completes the flow (by callback or by paste).
-function beginAuth(clientId) {
+function beginAuth(clientId, opts = {}) {
   const { verifier, challenge } = generatePkce();
   const state = base64url(crypto.randomBytes(16));
-  const authUrl = buildAuthUrl(clientId, challenge, state);
+  const authUrl = buildAuthUrl(clientId, challenge, state, opts);
   return { authUrl, verifier, state };
 }
 
@@ -95,11 +104,11 @@ function parseAuthInput(input) {
   return { code: s, state: null };
 }
 
-async function exchangeCodeForTokens({ clientId, code, verifier }) {
+async function exchangeCodeForTokens({ clientId, code, verifier, redirectUri }) {
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
     code,
-    redirect_uri: REDIRECT_URI,
+    redirect_uri: redirectUri || REDIRECT_URI,
     client_id: clientId,
     code_verifier: verifier,
   });
@@ -169,6 +178,9 @@ class SpotifyTokenStore {
 
 module.exports = {
   REDIRECT_URI,
+  REDIRECT_HOST,
+  REDIRECT_PORT,
+  DEFAULT_OAUTH,
   beginAuth,
   parseAuthInput,
   startCallbackServer,
