@@ -94,3 +94,29 @@ message ExternalId {
   string type = 1; // e.g. "isrc"
   string id = 2;   // e.g. "BEP011000054"
 }
+
+// ---------------------------------------------------------------------------
+// playlist contents  (GET https://{spclient}/playlist/v2/playlist/{id})
+// Minimal slice of playlist4_external.proto — enough to read the playlist name,
+// length and the ordered track URIs. Works for owned AND other users' playlists.
+// ---------------------------------------------------------------------------
+
+message SelectedListContent {
+  int32 length = 2;           // total track count (may exceed items if truncated)
+  ListAttributes attributes = 3;
+  ListItems contents = 5;
+}
+
+message ListAttributes {
+  string name = 1;
+}
+
+message ListItems {
+  int32 pos = 1;
+  bool truncated = 2;         // true when the server returned only a prefix
+  repeated Item items = 3;
+}
+
+message Item {
+  string uri = 1; // e.g. "spotify:track:4cOdK2wGLETKBW3PvgPWqT"
+}

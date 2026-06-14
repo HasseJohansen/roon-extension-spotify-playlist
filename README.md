@@ -6,19 +6,15 @@ A [Roon](https://roon.app) extension that imports a Spotify playlist — **inclu
 
 - A **Roon Core** reachable on the same network (the extension auto-discovers it).
 - **Node.js ≥ 20** (24 recommended) — or run the prebuilt **Docker image**.
-- A free **Spotify Developer app** (you must use your own — Spotify's API requires it). You need its **Client ID**, and the redirect URI `http://127.0.0.1:8888/callback` registered on it.
-- *(Optional)* **Tidal Developer credentials** — enable higher-accuracy ISRC matching for playlists you own. Without them, matching is text-based (still works well).
+- A **Spotify account** (a free one works). You log in once from inside Roon — **no Spotify Developer app or Client ID needed.** See the ISRC/account note in [Limitations](#limitations).
+- *(Optional)* **Tidal Developer credentials** — enable higher-accuracy ISRC→Tidal matching. Without them, matching is text-based (still works well).
 - Tracks must be available in your Roon library or a connected streaming service (Tidal/Qobuz) for Roon to find them.
 
 ## How it works
 
 1. You paste a Spotify playlist URL into the extension's settings (inside Roon).
-2. It fetches the playlist's tracks:
-   - **Playlists you own / collaborate on** → Spotify Web API (includes each track's ISRC).
-   - **Other users' public playlists** → Spotify's public embed. ISRC is unavailable here unless
-     you also connect the optional **Spotify ISRC (librespot)** login (see below), which fills in
-     each track's ISRC from Spotify's internal metadata service.
-3. Each track is matched against Roon via search — ISRC→Tidal for owned playlists, then fuzzy title + artist matching (version-decorator stripping, any-of-many artist matching) with a karaoke/cover guard so it won't pick the wrong version.
+2. It fetches the playlist's tracks the same way for **every** playlist — yours or another user's — straight from Spotify's internal service (the playlist contents plus each track's ISRC), using your single Spotify login.
+3. Each track is matched against Roon via search — ISRC→Tidal first, then fuzzy title + artist matching (version-decorator stripping, any-of-many artist matching) with a karaoke/cover guard so it won't pick the wrong version.
 4. Matched tracks are **appended to the selected Roon zone's play queue** (Roon's extension API has no way to write a playlist directly).
 5. In the Roon app you open that zone's **Queue → ⋮ → Save Queue as Playlist** to keep it.
 
@@ -48,17 +44,11 @@ docker run -d --network host \
 ### First-time configuration (in Roon)
 
 1. **Settings → Extensions** → enable **Spotify Playlist Importer**.
-2. Open its settings and fill in:
-   - **Spotify Client ID** — from <https://developer.spotify.com/dashboard>; set its redirect URI to `http://127.0.0.1:8888/callback`.
-   - *(optional)* **Tidal Client ID / Secret / Country Code** — from <https://developer.tidal.com>.
-3. **Connect Spotify → Connect now.** An authorization URL appears in the status label (and the logs):
+2. *(optional)* Open its settings and fill in **Tidal Client ID / Secret / Country Code** — from <https://developer.tidal.com> — for ISRC→Tidal matching.
+3. **Connect Spotify → Connect now.** An authorization URL appears in the status label (and the logs); approve it with any (free) Spotify account:
    - **Running locally:** the browser redirect is captured automatically.
    - **Running remotely / Docker / Kubernetes** (browser on a different machine): open the URL in any browser and approve. The `http://127.0.0.1:8888` page failing to load is expected — copy the **redirected URL** (or just the `code=…` value) into the **Paste Spotify auth code** field.
-4. The status should read **Spotify: connected**.
-5. *(optional)* **Connect Spotify (ISRC)** — to get ISRC matching for **other users'** public
-   playlists, set **Connect Spotify (ISRC) → Connect now** and complete the same approve/paste
-   flow with a (free) Spotify account. The status should read **Spotify ISRC (librespot): connected**.
-   Read the trade-off in **Limitations** first; this is optional and off by default.
+4. The status should read **Spotify: connected**. (See the account-risk note in [Limitations](#limitations).)
 
 ### Import a playlist
 
@@ -70,14 +60,8 @@ docker run -d --network host \
 
 ## Limitations
 
-Most of these come from changes Spotify made to its API (Nov 2024 + Feb 2026):
-
-- **You must supply your own Spotify Client ID.** Spotify no longer issues general API access; each user registers their own developer app.
-- **Other users' public playlists can't be read via the official API.** Since Feb 2026 `GET /v1/playlists/{id}/items` only returns tracks for playlists you own or collaborate on. To support other users' playlists this extension reads Spotify's **public embed** instead.
-- **No ISRC for other users' playlists** *(unless you connect the optional librespot login)*. Spotify also gates the per-track endpoint (`GET /v1/tracks`, returns `403`), and the embed carries no ISRC — so by default non-owned playlists are matched by **text only** (no Tidal ISRC tier). Match quality is still high, but expect the occasional miss (see `unmatched.log`). Connecting **Spotify ISRC (librespot)** restores per-track ISRC for them — see the next bullet for the trade-off.
-- **Optional "Spotify ISRC (librespot)" login carries extra risk.** It logs in with a normal Spotify account using Spotify's *first-party* client credentials and reads ISRCs from Spotify's **internal** metadata service (`spclient`). This is undocumented and outside Spotify's Terms — a step beyond the anonymous embed scrape — and carries a small risk to the account used. It needs no developer app and a **free** account suffices. Use it only for personal/self-hosted setups, ideally not your primary account. Leaving it disconnected keeps the default text-only matching for non-owned playlists.
-- **Embed scraping is outside Spotify's Developer/Embed Terms** and its undocumented format can change without notice. It's fine for personal/self-hosted use, but not appropriate to redistribute as a public service.
-- **Large playlists may be truncated** by the embed (it returns a subset of very long playlists). The status warns when fewer tracks were fetched than the playlist's reported total.
+- **The single Spotify login uses Spotify's internal client + endpoints, which carries account risk.** Rather than a registered developer app (whose API Spotify gated in Feb 2026 so it can no longer read other users' playlists or per-track ISRC), the extension logs in with Spotify's *first-party* "librespot/keymaster" client and reads playlist contents + ISRC from Spotify's **internal** service (`spclient`). This needs no developer app and a **free** account suffices, but it's undocumented and outside Spotify's Terms — so use it only for personal/self-hosted setups, ideally **not your primary account**. This is what lets one login read both your own and other users' public playlists, with ISRC.
+- **Very large playlists may be truncated** by the internal endpoint (it can return a prefix of extremely long playlists). The status/logs warn when fewer tracks were fetched than the playlist's reported total.
 - **Why a queue instead of a playlist:** Roon's public extension API has **no playlist-write capability** — it exposes only browsing and playback (search, queue, play), with no "create playlist" or "add to playlist" call. This is a long-standing, deliberate limitation (the feature has been requested in the RoonLabs API repos since 2017 and remains unimplemented). So the extension does the one thing the API *does* allow — appending each matched track to a zone's **play queue** — and you finish by saving that queue as a playlist in the Roon app. That single save is the only manual step.
 - **Qobuz ISRC lookup is not implemented** (Qobuz has no public developer program); Tidal covers the vast majority of releases.
 - **The OAuth callback is a loopback** (`127.0.0.1:8888`). When the browser is on another machine, use the **Paste Spotify auth code** field (above), or `kubectl port-forward 8888:8888`.

@@ -37,6 +37,7 @@ function types() {
       ClientTokenRequest: root.lookupType('internal.ClientTokenRequest'),
       ClientTokenResponse: root.lookupType('internal.ClientTokenResponse'),
       Track: root.lookupType('internal.Track'),
+      SelectedListContent: root.lookupType('internal.SelectedListContent'),
     };
   }
   return _root;
@@ -162,25 +163,64 @@ class InternalMetadataClient {
     return g.token;
   }
 
+  // Headers shared by every authenticated spclient request.
+  async _spclientHeaders() {
+    const [accessToken, clientToken] = await Promise.all([
+      this.tokenStore.getAccessToken(),
+      this.getClientToken(),
+    ]);
+    return {
+      accept: 'application/x-protobuf',
+      authorization: `Bearer ${accessToken}`,
+      'client-token': clientToken,
+    };
+  }
+
+  // Fetch a playlist's contents (owned or another user's) from the internal
+  // playlist service. Returns { name, total, truncated, trackIds } where trackIds
+  // are the ordered base62 track IDs (episodes / local files are skipped).
+  async getPlaylistContents(playlistId) {
+    const [headers, host] = await Promise.all([
+      this._spclientHeaders(),
+      this.getSpclientHost(),
+    ]);
+    const res = await fetch(`https://${host}/playlist/v2/playlist/${playlistId}`, { headers });
+    if (res.status === 429) {
+      const retry = Number(res.headers.get('retry-after') || '1');
+      await new Promise((r) => setTimeout(r, (retry + 1) * 1000));
+      return this.getPlaylistContents(playlistId);
+    }
+    if (!res.ok) {
+      throw new Error(`playlist ${res.status}: ${await res.text()}`);
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    const slc = types().SelectedListContent.decode(buf);
+    const items = (slc.contents && slc.contents.items) || [];
+    const trackIds = [];
+    for (const it of items) {
+      const m = /^spotify:track:([A-Za-z0-9]+)$/.exec((it && it.uri) || '');
+      if (m) trackIds.push(m[1]);
+    }
+    return {
+      name: (slc.attributes && slc.attributes.name) || null,
+      total: slc.length || items.length,
+      truncated: !!(slc.contents && slc.contents.truncated) || items.length < (slc.length || 0),
+      trackIds,
+    };
+  }
+
   // Fetch one track's metadata. Returns the common track shape, or null if the
   // track can't be fetched (missing / transient error) so callers can fall back.
   async getTrackMetadata(spotifyId) {
     if (this._cache.has(spotifyId)) return this._cache.get(spotifyId);
     let result = null;
     try {
-      const [accessToken, clientToken, host] = await Promise.all([
-        this.tokenStore.getAccessToken(),
-        this.getClientToken(),
+      const [headers, host] = await Promise.all([
+        this._spclientHeaders(),
         this.getSpclientHost(),
       ]);
       const gid = gidFromId(spotifyId);
-      const res = await fetch(`https://${host}/metadata/4/track/${gid}`, {
-        headers: {
-          accept: 'application/x-protobuf',
-          authorization: `Bearer ${accessToken}`,
-          'client-token': clientToken,
-        },
-      });
+      const res = await fetch(`https://${host}/metadata/4/track/${gid}`, { headers });
       if (res.status === 429) {
         const retry = Number(res.headers.get('retry-after') || '1');
         await new Promise((r) => setTimeout(r, (retry + 1) * 1000));
