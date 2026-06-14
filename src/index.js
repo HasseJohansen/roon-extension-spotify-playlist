@@ -136,7 +136,11 @@ function startSpotifyConnect() {
 
 async function finishSpotifyAuth(input) {
   if (!pendingAuth) {
-    state.spotifyStatus = 'Spotify: click "Connect now" first';
+    // No active attempt. Roon re-sends the pasted code on later saves; if we're
+    // already connected that stale code must not downgrade the status.
+    state.spotifyStatus = tokenStore.isConnected()
+      ? 'Spotify: connected'
+      : 'Spotify: click "Connect now" first';
   } else {
     const { code, state: gotState } = parseAuthInput(input);
     if (!code) {
