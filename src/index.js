@@ -80,8 +80,27 @@ const ext = createExtension({
     state.core = core;
     ext.status.set_status(formatStatus(), false);
   },
-  onCoreUnpaired() {
+  onCoreUnpaired(core) {
     state.core = null;
+    // Restore pairing state and restart discovery to reconnect
+    // The Roon API library's start_discovery() checks if (this._sood) return;
+    // so we need to stop and delete the existing Sood instance first
+    if (ext.roon && ext.roon._sood) {
+      ext.roon._sood.stop();
+      delete ext.roon._sood;
+    }
+    if (ext.roon) {
+      // Restore pairing state to allow reconnection to the same core
+      const roonstate = ext.roon.load_config("roonstate") || {};
+      if (roonstate.paired_core_id) {
+        ext.roon.paired_core_id = roonstate.paired_core_id;
+        ext.roon.paired_core = { core_id: roonstate.paired_core_id };
+        ext.roon.is_paired = true;
+      }
+      setTimeout(() => {
+        ext.roon.start_discovery();
+      }, 6000);
+    }
   },
   makeLayout() {
     return buildLayout(state);
