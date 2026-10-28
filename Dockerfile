@@ -2,7 +2,7 @@
 # Multi-stage build for a smaller final image
 
 # Build stage
-FROM node:24-alpine AS builder
+FROM node:26-alpine AS builder
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ COPY package*.json ./
 RUN npm ci
 
 # Production stage
-FROM node:24-alpine
+FROM node:26-alpine
 
 WORKDIR /app
 
